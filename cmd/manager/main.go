@@ -28,6 +28,7 @@ import (
 
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -35,6 +36,7 @@ import (
 
 	aigatewayv1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/aigateway/v1alpha1"
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/inference/v1alpha1"
+	"github.com/opendatahub-io/ai-gateway-controller/pkg/consumerportal"
 	"github.com/opendatahub-io/ai-gateway-controller/pkg/controller"
 	"github.com/opendatahub-io/ai-gateway-controller/pkg/guardrail"
 	"github.com/opendatahub-io/ai-gateway-controller/pkg/tenant"
@@ -71,6 +73,9 @@ func main() {
 		localSite            string
 		knownClusters        []string
 		skipNetworkPolicy    bool
+		authProxyImage       string
+		portalManifestPath   string
+		authorinoNamespace   string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "The address the metrics endpoint binds to.")
@@ -104,6 +109,12 @@ func main() {
 	})
 	flag.BoolVar(&skipNetworkPolicy, "skip-network-policy", false,
 		"Omit controller-managed payload-processing NetworkPolicies when the installation supplies equivalent networking. Default false.")
+	flag.StringVar(&authProxyImage, "kube-auth-proxy-image", resolveKubeAuthProxyImage(),
+		"Container image for the consumer portal OIDC auth proxy (kube-auth-proxy).")
+	flag.StringVar(&portalManifestPath, "consumer-portal-manifest-path", "/config/manifests/consumer-portal/base",
+		"Path to the kustomize entrypoint for the consumer portal auth proxy resources.")
+	flag.StringVar(&authorinoNamespace, "authorino-namespace", consumerportal.DefaultAuthorinoNamespace,
+		"Namespace of the Authorino pods allowed to reach the consumer portal auth proxy.")
 
 	opts := zap.Options{}
 	if err := applyLogDevelopment(&opts, os.Stderr); err != nil {
@@ -129,6 +140,7 @@ func main() {
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 clientgoscheme.Scheme,
+		Client:                 client.Options{Cache: &client.CacheOptions{Unstructured: true}},
 		Metrics:                buildMetricsServerOptions(metricsAddr, metricsSecure),
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
@@ -172,6 +184,20 @@ func main() {
 	}
 	if err := modelReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up ExternalModel and ExternalProvider reconcilers")
+		os.Exit(1)
+	}
+
+	portalReconciler := &consumerportal.Reconciler{
+		Client:             mgr.GetClient(),
+		APIReader:          mgr.GetAPIReader(),
+		ManifestPath:       portalManifestPath,
+		Image:              authProxyImage,
+		AuthorinoNamespace: authorinoNamespace,
+		ResyncInterval:     resyncInterval,
+		Log:                ctrl.Log.WithName("consumer-portal"),
+	}
+	if err := portalReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to set up consumer portal reconciler")
 		os.Exit(1)
 	}
 
@@ -219,6 +245,16 @@ func resolveExtprocImage() string {
 	return cmp.Or(
 		os.Getenv("RELATED_IMAGE_ODH_PRAXIS_EXTPROC_IMAGE"),
 		"quay.io/opendatahub/odh-praxis-extproc:odh-stable",
+	)
+}
+
+// resolveKubeAuthProxyImage returns the consumer portal auth proxy image.
+// Operator-managed deployments set RELATED_IMAGE_ODH_KUBE_AUTH_PROXY_IMAGE to
+// a digest-pinned reference; local development falls back to the mutable tag.
+func resolveKubeAuthProxyImage() string {
+	return cmp.Or(
+		os.Getenv("RELATED_IMAGE_ODH_KUBE_AUTH_PROXY_IMAGE"),
+		"quay.io/opendatahub/odh-kube-auth-proxy:odh-stable",
 	)
 }
 

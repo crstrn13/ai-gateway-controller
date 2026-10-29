@@ -1353,9 +1353,13 @@ func (r *Reconciler) cleanupModelTransport(ctx context.Context, namespace string
 }
 
 func (r *Reconciler) applyProviderTransport(ctx context.Context, provider *v1alpha1.ExternalProvider, tenantID, gatewayName, gatewayNamespace string) error {
+	port, err := resolver.ProviderPort(provider)
+	if err != nil {
+		return fmt.Errorf("resolve provider %s transport port: %w", provider.Name, err)
+	}
 	route := resolver.Route{
 		Namespace: provider.Namespace, Provider: provider.Name, ProviderType: provider.Spec.Provider,
-		Endpoint: provider.Spec.Endpoint, TLSCACertificates: strings.TrimSpace(provider.Spec.Config["tls.caCertificates"]),
+		Endpoint: provider.Spec.Endpoint, Port: port, TLSCACertificates: strings.TrimSpace(provider.Spec.Config["tls.caCertificates"]),
 	}
 	service := providerService(route, provider.Namespace)
 	serviceEntry := providerServiceEntry(route, provider.Namespace)
@@ -1640,6 +1644,9 @@ func (r *Reconciler) praxisTenantForNamespace(ctx context.Context, namespace str
 
 func (r *Reconciler) validateProvider(_ context.Context, p *v1alpha1.ExternalProvider) error {
 	if err := validateProviderEndpoint(p.Spec.Endpoint); err != nil {
+		return err
+	}
+	if _, err := resolver.ProviderPort(p); err != nil {
 		return err
 	}
 	authType := resolver.AuthType(strings.ToLower(strings.TrimSpace(p.Spec.Auth.Type)))
@@ -2002,6 +2009,7 @@ func (r *Reconciler) writeExternalModelRoutes(ctx context.Context, tenantID, mod
 		namespace, name string
 		count           int
 		streamResponse  bool
+		bufferRequest   bool
 	}
 	enabled := make([]routeRules, 0, len(models)+len(attached))
 	for _, model := range models {
@@ -2013,7 +2021,7 @@ func (r *Reconciler) writeExternalModelRoutes(ctx context.Context, tenantID, mod
 		if err != nil || !found {
 			return fmt.Errorf("ExternalModel %s route renderer did not produce HTTPRoute rules", model)
 		}
-		enabled = append(enabled, routeRules{modelNamespace, modelRouteName(model), len(rules), routesNeedTranslation(byModel[model])})
+		enabled = append(enabled, routeRules{modelNamespace, modelRouteName(model), len(rules), routesNeedTranslation(byModel[model]), routesUseTranslation(byModel[model])})
 	}
 	for _, a := range attached {
 		httpRoute := modelHTTPRouteSet(a.routes, a.model.Namespace, gatewayName, gatewayNamespace)
@@ -2021,12 +2029,16 @@ func (r *Reconciler) writeExternalModelRoutes(ctx context.Context, tenantID, mod
 		if err != nil || !found {
 			return fmt.Errorf("attached ExternalModel %s/%s route renderer did not produce HTTPRoute rules", a.model.Namespace, a.model.Name)
 		}
-		enabled = append(enabled, routeRules{a.model.Namespace, a.routeName, len(rules), routesNeedTranslation(a.routes)})
+		enabled = append(enabled, routeRules{a.model.Namespace, a.routeName, len(rules), routesNeedTranslation(a.routes), routesUseTranslation(a.routes)})
 	}
 	for _, route := range enabled {
 		responseMode := "NONE"
 		if route.streamResponse {
 			responseMode = "STREAMED"
+		}
+		requestMode := "STREAMED"
+		if route.bufferRequest {
+			requestMode = "BUFFERED"
 		}
 		for index := 0; index < route.count; index++ {
 			kept = append(kept, map[string]any{
@@ -2069,9 +2081,9 @@ func (r *Reconciler) writeExternalModelRoutes(ctx context.Context, tenantID, mod
 							"overrides": map[string]any{
 								"processing_mode": map[string]any{
 									"request_header_mode": "SEND",
-									// Stream request bytes to the dedicated ExtProc. It holds the header response while
-									// the selected-provider translator validates the bounded body, then routes once.
-									"request_body_mode":    "STREAMED",
+									// Buffer translated requests so Envoy sends one complete body message,
+									// including when trailers follow. Flag-off keeps its existing mode.
+									"request_body_mode":    requestMode,
 									"response_header_mode": "SEND",
 									// Envoy chooses the response processing mode before the
 									// provider is selected. Stream all rules for a model that
@@ -2410,6 +2422,9 @@ func providerEndpointForRoute(route resolver.Route) providerEndpoint {
 		// the live reconcile path.
 		return providerEndpoint{authority: route.Endpoint, host: route.Endpoint, port: 443}
 	}
+	if route.Port != 0 {
+		endpoint.port = route.Port
+	}
 	return endpoint
 }
 
@@ -2440,6 +2455,15 @@ func modelHTTPRouteRuleCount(routes []resolver.Route) int {
 func routesNeedTranslation(routes []resolver.Route) bool {
 	for _, route := range routes {
 		if route.APIFormat == "messages" {
+			return true
+		}
+	}
+	return false
+}
+
+func routesUseTranslation(routes []resolver.Route) bool {
+	for _, route := range routes {
+		if route.APITranslationEnabled {
 			return true
 		}
 	}
