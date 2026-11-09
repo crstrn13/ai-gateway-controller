@@ -1,11 +1,6 @@
 //go:build e2e
 
-// Package internal holds the shared e2e harness: cluster-independent setup
-// (CRD install, running the controllers) and fixtures. It is imported by the
-// platform suites (kind, and later openshift), which supply only their own
-// TestMain and Features. Being under internal/ means nothing outside test/e2e
-// can import it.
-package internal
+package config
 
 import (
 	"context"
@@ -33,11 +28,53 @@ import (
 	"github.com/opendatahub-io/ai-gateway-controller/pkg/tenant"
 )
 
-// InstallCRDs returns an env.Func that applies every given CRD directory into
-// the cluster and waits for each CRD to report Established, so the manager's
-// REST mapper resolves every watched kind on its first attempt (avoids the
-// discovery-race retry storm). Paths are relative to the test package's working
-// directory (the package go test runs).
+// This file is the "install the product" layer — the in-process AI Gateway
+// control plane and the CRD install it needs — living on the config Environment
+// (the AI Gateway analogue of Crossplane's HelmInstall). It is e2e-tagged
+// because it imports controller-runtime and the controller's reconcilers;
+// environment.go stays untagged so default builds are unaffected.
+
+// controllerCRDDirs are the CRDs the reconcilers watch, installed before the
+// manager starts: the repo's own (inference, aigateway) + the MaaS stubs. NOT
+// the Gateway/istio stubs — the dep installers provide the real ones. Paths are
+// relative to the test package (test/e2e).
+var controllerCRDDirs = []string{
+	"../../config/crd/bases",
+	"../../config/self/crd/bases",
+	"manifests/crds",
+}
+
+// controllerManifestPath is the kustomize overlay the tenant reconciler renders
+// the ext-proc workload from, relative to the test package.
+const controllerManifestPath = "../../config/manifests/external-model/overlays/odh"
+
+// Generic defaults for the kind environment (no OpenShift-specific names). The
+// gateway + namespace match the serving stack in manifests/; the image matches
+// config's -extproc-image default.
+const (
+	defaultExtProcImage     = "praxis-extproc:dev"
+	defaultGatewayName      = "ai-gateway"
+	defaultGatewayNamespace = "istio-system"
+)
+
+// InstallController returns the setup env.Funcs that install the controller's
+// CRDs and run the AI Gateway reconcilers in-process, plus the teardown func.
+// The reconcilers get the real, loaded ext-proc image so the pods they render
+// actually run (not the placeholder the control-plane-only lanes use).
+func (e *Environment) InstallController() (setup []env.Func, teardown env.Func) {
+	cp := &ControlPlane{
+		ManifestPath:     controllerManifestPath,
+		Image:            e.ExtProcImage(), // the image given to config, not a placeholder
+		GatewayName:      defaultGatewayName,
+		GatewayNamespace: defaultGatewayNamespace,
+	}
+	return []env.Func{InstallCRDs(controllerCRDDirs...), cp.Setup}, cp.Teardown
+}
+
+// InstallCRDs returns an env.Func that applies every given CRD directory and
+// waits for each CRD to report Established, so the manager's REST mapper resolves
+// every watched kind on its first attempt (avoids the discovery-race retry
+// storm). Paths are relative to the test package's working directory.
 func InstallCRDs(dirs ...string) env.Func {
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
 		r, err := resources.New(cfg.Client().RESTConfig())
@@ -85,15 +122,31 @@ func InstallCRDs(dirs ...string) env.Func {
 
 // ControlPlane runs this repo's controllers in-process against the suite's
 // cluster (matching the project's minimal kind dev harness) rather than
-// building/loading the FIPS controller image. Setup and Teardown are env.Funcs;
+// building/loading the controller image. Setup and Teardown are env.Funcs;
 // register Setup after InstallCRDs and Teardown before DestroyCluster.
 type ControlPlane struct {
 	// ManifestPath is the kustomize overlay the tenant reconciler renders the
-	// praxis-extproc workload from. Relative to the test package's working dir.
+	// ext-proc workload from. Relative to the test package's working dir.
 	ManifestPath string
+
+	// Image overrides the ext-proc image the tenant reconciler renders. Empty
+	// uses the placeholder (control-plane lanes that only assert rendered objects);
+	// set it to a real, loaded image when the ext-proc pods must actually run.
+	Image string
+	// GatewayName/GatewayNamespace override the gateway the model reconciler
+	// attaches routes to. Empty uses the production defaults.
+	GatewayName      string
+	GatewayNamespace string
 
 	cancel context.CancelFunc
 	done   chan error
+}
+
+func or(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
 }
 
 // Setup wires the same reconcilers cmd/manager does and starts the manager in a
@@ -120,7 +173,7 @@ func (cp *ControlPlane) Setup(ctx context.Context, cfg *envconf.Config) (context
 		Client:               mgr.GetClient(),
 		APIReader:            mgr.GetAPIReader(),
 		ManifestPath:         cp.ManifestPath,
-		Image:                "quay.io/example/praxis-extproc:test",
+		Image:                or(cp.Image, defaultExtProcImage),
 		MaaSAPIRouteNameBase: "maas-api-route",
 		ResyncInterval:       time.Minute,
 		Log:                  ctrl.Log.WithName("tenant"),
@@ -133,8 +186,8 @@ func (cp *ControlPlane) Setup(ctx context.Context, cfg *envconf.Config) (context
 		Client:           mgr.GetClient(),
 		APIReader:        mgr.GetAPIReader(),
 		Scheme:           mgr.GetScheme(),
-		GatewayName:      "maas-default-gateway",
-		GatewayNamespace: "openshift-ingress",
+		GatewayName:      or(cp.GatewayName, defaultGatewayName),
+		GatewayNamespace: or(cp.GatewayNamespace, defaultGatewayNamespace),
 		Network:          "external-model",
 		Log:              ctrl.Log.WithName("external-model"),
 	}

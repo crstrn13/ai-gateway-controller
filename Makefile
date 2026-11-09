@@ -80,6 +80,16 @@ test-envtest: $(SETUP_ENVTEST) ##	run controller scenarios against a local API s
 	fi; \
 	KUBEBUILDER_ASSETS="$$assets" go test -tags envtest $(ENVTEST_FLAGS) ./test/envtest/...
 
+E2E_FLAGS ?= -v -timeout=30m
+E2E_VLOG  ?= 4          # klog verbosity for framework provisioning logs (kind create/destroy, commands)
+.PHONY: test-e2e
+test-e2e: ## run the e2e suite (flag-driven; all areas). Filter with E2E_LABELS="area=bbr"
+	go test -tags=e2e $(E2E_FLAGS) ./test/e2e/ $(if $(E2E_LABELS),--labels "$(E2E_LABELS)",) -args -v=$(E2E_VLOG)
+
+.PHONY: test-e2e-bbr
+test-e2e-bbr: ## run only the BBR area of the e2e suite
+	$(MAKE) test-e2e E2E_LABELS=area=bbr
+
 .PHONY: tidy
 tidy: ##	go mod tidy
 	go mod tidy

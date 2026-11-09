@@ -2,7 +2,7 @@
 
 // Package kind holds the kind-backed end-to-end suite driven by
 // sigs.k8s.io/e2e-framework. TestMain owns the cluster lifecycle and wires the
-// shared harness from test/e2e/internal; the Features (one per logical
+// shared harness from test/e2e/config; the Features (one per logical
 // assertion group) live in sibling *_test.go files.
 //
 // Run with (klog verbosity surfaces the framework's own provisioning steps —
@@ -22,7 +22,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envfuncs"
 	"sigs.k8s.io/e2e-framework/support/kind"
 
-	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/internal"
+	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/config"
 )
 
 // testenv is the shared suite environment. Features reference it via
@@ -50,13 +50,13 @@ func TestMain(m *testing.M) {
 	// (or the old run.sh) left behind, e.g. external-model-two-plane.
 	clusterName := envconf.RandomName("aigc-e2e", 16)
 
-	controlPlane := &internal.ControlPlane{
+	controlPlane := &config.ControlPlane{
 		ManifestPath: "../../../config/manifests/external-model/overlays/odh",
 	}
 
 	testenv.Setup(
 		envfuncs.CreateCluster(kind.NewProvider(), clusterName),
-		internal.InstallCRDs(crdDirs...),
+		config.InstallCRDs(crdDirs...),
 		controlPlane.Setup,
 	)
 	testenv.Finish(
