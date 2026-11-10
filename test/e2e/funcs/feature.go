@@ -3,10 +3,7 @@ package funcs
 import (
 	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +18,8 @@ import (
 	"sigs.k8s.io/e2e-framework/klient/wait/conditions"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
+
+	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/gateway"
 )
 
 // DefaultPollInterval is the poll cadence for the Within helpers.
@@ -120,58 +119,19 @@ func DeploymentBecomesAvailableWithin(d time.Duration, namespace, name string) f
 	}
 }
 
-// HTTPPostStatusWithin drives a data-plane request, retrying until the response
-// status equals want or the deadline passes (routes/endpoints propagate lazily).
-func HTTPPostStatusWithin(d time.Duration, url, body string, headers map[string]string, want int) features.Func {
-	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		t.Helper()
-		var last int
-		var lastBody string
-		err := wait.For(func(context.Context) (bool, error) {
-			st, b, e := httpPost(ctx, url, body, headers)
-			if e != nil {
-				return false, nil
-			}
-			last, lastBody = st, b
-			return st == want, nil
-		}, wait.WithTimeout(d), wait.WithInterval(5*time.Second))
-		if err != nil {
-			t.Fatalf("POST %s: want status %d, last=%d\nbody: %s", url, want, last, lastBody)
-		}
-		return ctx
+// GatewayClient resolves the gateway's assigned LB IP and returns a gateway SDK
+// client for it. Errors if the Service has no IP yet — call it inside an Assess,
+// where the gateway is already up. Driving requests + asserting is the Assess's
+// own inline job (convention), so there is no chat/assertion helper here.
+func GatewayClient(ctx context.Context, c *envconf.Config, gatewayName, ns string, opts ...gateway.Option) (*gateway.Client, error) {
+	ip, err := gatewayLBIP(ctx, c.Client().Resources(), gatewayName, ns)
+	if err != nil {
+		return nil, err
 	}
-}
-
-// ChatThroughGatewayWithin resolves the metallb LB IP of the istio gateway's
-// Service (<gatewayName>-istio), then POSTs path until the response status equals
-// want or the deadline passes. Resolving the IP from the Service avoids assuming
-// the kind subnet / pool ordering.
-func ChatThroughGatewayWithin(d time.Duration, gatewayName, gwNamespace, path, body string, headers map[string]string, want int) features.Func {
-	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		t.Helper()
-		r := c.Client().Resources()
-		var last int
-		var lastBody, lastErr string
-		err := wait.For(func(context.Context) (bool, error) {
-			ip, e := gatewayLBIP(ctx, r, gatewayName, gwNamespace)
-			if e != nil || ip == "" {
-				lastErr = "gateway LB IP not assigned yet"
-				return false, nil
-			}
-			st, b, e := httpPost(ctx, "http://"+ip+path, body, headers)
-			if e != nil {
-				lastErr = e.Error()
-				return false, nil
-			}
-			last, lastBody = st, b
-			return st == want, nil
-		}, wait.WithTimeout(d), wait.WithInterval(5*time.Second))
-		if err != nil {
-			t.Fatalf("gateway %s/%s POST %s: want %d, last=%d (%s)\nbody: %s",
-				gwNamespace, gatewayName, path, want, last, lastErr, lastBody)
-		}
-		return ctx
+	if ip == "" {
+		return nil, fmt.Errorf("gateway %s/%s has no LoadBalancer IP yet", ns, gatewayName)
 	}
+	return gateway.New("http://"+ip, opts...), nil
 }
 
 // gatewayLBIP returns the external IP metallb assigned to the istio gateway's
@@ -187,28 +147,4 @@ func gatewayLBIP(ctx context.Context, r *resources.Resources, gatewayName, ns st
 		}
 	}
 	return "", nil
-}
-
-func httpPost(ctx context.Context, url, body string, headers map[string]string) (int, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
-	if err != nil {
-		return 0, "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
-	if err != nil {
-		return 0, "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	b, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, string(b), nil
-}
-
-// ChatBody builds a minimal OpenAI chat-completions body whose only routing
-// signal is the model field — the BBR input.
-func ChatBody(model, content string) string {
-	return fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":%q}]}`, model, content)
 }

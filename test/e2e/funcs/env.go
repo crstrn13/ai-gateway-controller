@@ -14,7 +14,15 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/e2e-framework/klient/decoder"
+	"sigs.k8s.io/e2e-framework/klient/k8s"
+	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
+	"sigs.k8s.io/e2e-framework/klient/wait"
+	"sigs.k8s.io/e2e-framework/klient/wait/conditions"
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -22,6 +30,87 @@ import (
 	aigatewayv1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/aigateway/v1alpha1"
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/inference/v1alpha1"
 )
+
+// ApplyManifests applies a directory of manifests as a suite-level setup step
+// (env.Func) — for shared environment infra (backends, etc.), not per-test CRs.
+// Paths are relative to the test package working directory (test/e2e).
+func ApplyManifests(dir, pattern string) env.Func {
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		r, err := resources.New(cfg.Client().RESTConfig())
+		if err != nil {
+			return ctx, err
+		}
+		_ = clientgoscheme.AddToScheme(r.GetScheme())
+		if err := decoder.ApplyWithManifestDir(ctx, r, dir, pattern, nil); err != nil {
+			return ctx, fmt.Errorf("apply manifests %s/%s: %w", dir, pattern, err)
+		}
+		return ctx, nil
+	}
+}
+
+// InstallCRDs applies every given CRD directory and waits for each CRD to report
+// Established, so the manager's/istio's REST mapper resolves every kind on first
+// use (avoids the discovery-race retry storm). Paths are relative to the test
+// package working directory.
+func InstallCRDs(dirs ...string) env.Func {
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		r, err := resources.New(cfg.Client().RESTConfig())
+		if err != nil {
+			return ctx, fmt.Errorf("new resources client: %w", err)
+		}
+		if err := apiextensionsv1.AddToScheme(r.GetScheme()); err != nil {
+			return ctx, fmt.Errorf("add apiextensions scheme: %w", err)
+		}
+		for _, dir := range dirs {
+			if err := decoder.ApplyWithManifestDir(ctx, r, dir, "*.yaml", nil); err != nil {
+				return ctx, fmt.Errorf("apply CRDs from %s: %w", dir, err)
+			}
+		}
+		var crds apiextensionsv1.CustomResourceDefinitionList
+		if err := r.List(ctx, &crds); err != nil {
+			return ctx, fmt.Errorf("list CRDs: %w", err)
+		}
+		for i := range crds.Items {
+			crd := &crds.Items[i]
+			err := wait.For(
+				conditions.New(r).ResourceMatch(crd, func(obj k8s.Object) bool {
+					c, ok := obj.(*apiextensionsv1.CustomResourceDefinition)
+					if !ok {
+						return false
+					}
+					for _, cond := range c.Status.Conditions {
+						if cond.Type == apiextensionsv1.Established && cond.Status == apiextensionsv1.ConditionTrue {
+							return true
+						}
+					}
+					return false
+				}),
+				wait.WithTimeout(60*time.Second), wait.WithInterval(time.Second),
+			)
+			if err != nil {
+				return ctx, fmt.Errorf("CRD %s not Established: %w", crd.Name, err)
+			}
+		}
+		return ctx, nil
+	}
+}
+
+// WaitForDeploymentAvailable blocks until a Deployment reports Available (env.Func).
+func WaitForDeploymentAvailable(namespace, name string, d time.Duration) env.Func {
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		dep := &appsv1.Deployment{}
+		dep.SetName(name)
+		dep.SetNamespace(namespace)
+		err := wait.For(
+			conditions.New(cfg.Client().Resources()).DeploymentConditionMatch(dep, appsv1.DeploymentAvailable, corev1.ConditionTrue),
+			wait.WithTimeout(d), wait.WithInterval(3*time.Second),
+		)
+		if err != nil {
+			return ctx, fmt.Errorf("deployment %s/%s not Available: %w", namespace, name, err)
+		}
+		return ctx, nil
+	}
+}
 
 // EnvFuncs runs env.Funcs in order, short-circuiting on the first error.
 func EnvFuncs(fns ...env.Func) env.Func {

@@ -16,13 +16,21 @@ test/e2e/
                      reconcilers). Imports controller-runtime + pkg/{controller,tenant}.
   funcs/             UNTAGGED. The fixture library (reusable features.Func / env.Func):
     env.go           EnvFuncs, AsFeaturesFunc, AddTypesToScheme, InstallMetalLB/
-                     GatewayAPI/Istio, LoadImage.
+                     GatewayAPI/Istio, LoadImage, InstallCRDs, ApplyManifests +
+                     WaitForDeploymentAvailable (suite-level infra, env.Func).
     feature.go       AllOf, ApplyResources/DeleteResources, Create/Delete,
                      DeploymentBecomesAvailableWithin, ResourceCreatedWithin,
-                     HTTPPostStatusWithin, ChatBody.
+                     GatewayClient (build an SDK client for the gateway's LB IP).
     fixtures.go      Code fixtures: ReadyTenant, ExternalProvider/Model, ProviderSecret.
+  gateway/           UNTAGGED. A small HTTP SDK for the gateway: gateway.New(baseURL),
+                     Client.ChatCompletion / ChatCompletionStream / Post, Response.
+                     Pure HTTP — no Kubernetes; funcs.GatewayClient resolves the IP.
   manifests/
-    <area>/*.yaml    YAML fixtures per area (applied with funcs.ApplyResources).
+    backends/        shared sim backend (applied once in TestMain, not per-test).
+    gie/             Gateway API Inference Extension InferencePool CRD (InstallDeps).
+    llmd/            llm-d stack for area=llm-d: EPP + InferencePool + vLLM-vcr
+                     members + the GIE HTTPRoute (vendored from the praxis demo).
+    <area>/*.yaml    per-area YAML fixtures (applied in a feature via funcs.ApplyResources).
     crds/            MaaS CRD stubs the in-process controller watches.
   consts.go          //go:build e2e, package e2e. Label keys/values, FieldManager.
   main_test.go       //go:build e2e. TestMain: flags -> env, suites, setup/finish.
@@ -55,6 +63,40 @@ go vet -tags=e2e ./test/e2e/ ./test/e2e/kind/      # tagged must pass
 - **Code** (`funcs` builders + `funcs.Create(...)`) for the CRs a test
   parameterizes (ExternalProvider/Model, tenants). Add builders to `funcs/fixtures.go`.
 
+## Test shape (convention)
+
+- **Setup / Teardown = fixtures.** Compose reusable `funcs`/`fixtures` helpers
+  (`ApplyResources`, `ReadyTenant`, `Create`, `DeploymentBecomesAvailableWithin`,
+  `Delete`, …) via `funcs.AllOf(...)`. Keep them declarative; no assertions here
+  beyond "it came up".
+- **Assess = inline code.** Write the assertion as a raw closure in the test, not
+  behind a helper — the check should be readable where it runs:
+
+  ```go
+  Assess("body `model` routes to the backend", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+      gw, err := funcs.GatewayClient(ctx, c, "ai-gateway", "istio-system")
+      if err != nil {
+          t.Fatal(err)
+      }
+      resp, err := gw.ChatCompletion(ctx, gateway.ChatRequest{Model: "granite-8b", Messages: gateway.User("hello")})
+      if err != nil {
+          t.Fatal(err)
+      }
+      if resp.StatusCode != http.StatusOK {
+          t.Errorf("want %d, got %d: %s", http.StatusOK, resp.StatusCode, resp.String())
+      }
+      return ctx
+  }),
+  ```
+
+  Rules for the closure: named params `(ctx, t, c)`, it MUST `return ctx`, use
+  stdlib `t.Fatal`/`t.Errorf` (not testify), and `http.Status*` constants (not bare
+  200/404). Drive traffic through the `gateway` SDK (`funcs.GatewayClient` →
+  `gw.ChatCompletion`/`ChatCompletionStream`). **No assertion/chat helper in
+  `funcs`** — the assertion lives inline. If the check needs eventual-consistency
+  retry, write a `wait.For` loop inline too (don't hide it behind a helper). The
+  only `funcs` thing an Assess may call is the `GatewayClient` constructor.
+
 ## Adding an area (e.g. intelligent routing)
 
 1. `manifests/<area>/*.yaml` for its static stack.
@@ -69,8 +111,10 @@ fails the run otherwise.
 ## Lifecycle (owned by config.Environment)
 
 `CreateClusterFunc` → `InstallDeps` (metallb → Gateway API → istio → load image)
-→ `InstallController` (installs the controller CRDs + runs the reconcilers
-in-process with the real ext-proc image) → `DestroyClusterFunc`.
+→ shared backend (`ApplyManifests manifests/backends` + wait) → `InstallController`
+(installs the controller CRDs + runs the reconcilers in-process with the real
+ext-proc image) → `DestroyClusterFunc`. Shared infra belongs here; per-test CRs
+belong in a feature's `WithSetup`.
 
 ## Conventions
 
@@ -92,8 +136,11 @@ make test-e2e                              # all areas, fresh kind cluster
 make test-e2e-bbr                          # area=bbr
 make test-e2e E2E_LABELS=area=bbr
 go test -tags=e2e ./test/e2e/ -create-cluster=false -install-deps=false   # live cluster
-AIGW_EXTPROC_READY=1 ...                    # also runs the controller-driven BBR test
 ```
+
+All tests run by default (no skip gates). Filter with `--labels area=<area>` or
+`-run <name>`. A test fails (not skips) if its prerequisites — e.g. the ext-proc
+image being loadable, or llm-d image egress — aren't there; that's intentional.
 
 Flags: `-create-cluster`, `-destroy-cluster`, `-install-deps`, `-run-controller`,
 `-cluster-name`, `-extproc-image`, `-test-suite`, framework `--labels`.
@@ -101,6 +148,10 @@ Flags: `-create-cluster`, `-destroy-cluster`, `-install-deps`, `-run-controller`
 ## Tests today
 
 - `TestBBR` (bbr_test.go) — controller-driven body-based routing: CRs →
-  controller renders the ext-proc → body `model` routes. Gated behind
-  `AIGW_EXTPROC_READY=1` (needs the real image loaded; the provider-transport → 200
-  is the part to validate on a live cluster).
+  controller renders the ext-proc → body `model` routes. Needs the ext-proc image
+  loaded (baseline does this) + the provider transport.
+- `TestLLMD` (llmd_test.go) — self-hosted / llm-d via GIE: istio routes to an
+  InferencePool, the EPP picks a vLLM pod. Pure data-plane (NOT controller-driven —
+  no llm-d reconciliation exists here; RHAIGW-468 groundwork). EPP + pool are
+  vendored from the praxis demo; the HTTPRoute→InferencePool (istio-GIE) is the
+  unvalidated frontier.

@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -53,6 +54,11 @@ func TestMain(m *testing.M) {
 
 	if environment.ShouldInstallDeps() {
 		setup = append(setup, environment.InstallDeps()...)
+		// Shared environment infra: the sim backend tests route to.
+		setup = append(setup,
+			funcs.ApplyManifests("manifests/backends", "*.yaml"),
+			funcs.WaitForDeploymentAvailable("llm", "internal-model", 3*time.Minute),
+		)
 	}
 	// Suite-specific setup (e.g. a future llm-d suite that also installs a pool).
 	setup = append(setup, environment.GetSelectedSuiteAdditionalEnvSetup()...)

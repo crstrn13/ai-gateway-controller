@@ -203,6 +203,7 @@ func (e *Environment) InstallDeps() []env.Func {
 	return []env.Func{
 		funcs.InstallMetalLB(*e.metalLBVer),
 		funcs.InstallGatewayAPI(*e.gatewayAPIVer),
+		funcs.InstallCRDs("manifests/gie"), // GIE InferencePool CRD, before istio (GIE needs it)
 		funcs.InstallIstio(),
 		funcs.LoadImage(e.GetClusterName(), *e.extProcImage, e.ShouldCreateCluster()),
 	}

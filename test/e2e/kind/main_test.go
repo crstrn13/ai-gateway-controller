@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/e2e-framework/support/kind"
 
 	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/config"
+	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/funcs"
 )
 
 // testenv is the shared suite environment. Features reference it via
@@ -56,7 +57,7 @@ func TestMain(m *testing.M) {
 
 	testenv.Setup(
 		envfuncs.CreateCluster(kind.NewProvider(), clusterName),
-		config.InstallCRDs(crdDirs...),
+		funcs.InstallCRDs(crdDirs...),
 		controlPlane.Setup,
 	)
 	testenv.Finish(

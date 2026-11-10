@@ -7,18 +7,12 @@ import (
 	"fmt"
 	"time"
 
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	crlog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"sigs.k8s.io/e2e-framework/klient/decoder"
-	"sigs.k8s.io/e2e-framework/klient/k8s"
-	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
-	"sigs.k8s.io/e2e-framework/klient/wait"
-	"sigs.k8s.io/e2e-framework/klient/wait/conditions"
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 
@@ -26,6 +20,7 @@ import (
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/inference/v1alpha1"
 	"github.com/opendatahub-io/ai-gateway-controller/pkg/controller"
 	"github.com/opendatahub-io/ai-gateway-controller/pkg/tenant"
+	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/funcs"
 )
 
 // This file is the "install the product" layer — the in-process AI Gateway
@@ -68,56 +63,7 @@ func (e *Environment) InstallController() (setup []env.Func, teardown env.Func) 
 		GatewayName:      defaultGatewayName,
 		GatewayNamespace: defaultGatewayNamespace,
 	}
-	return []env.Func{InstallCRDs(controllerCRDDirs...), cp.Setup}, cp.Teardown
-}
-
-// InstallCRDs returns an env.Func that applies every given CRD directory and
-// waits for each CRD to report Established, so the manager's REST mapper resolves
-// every watched kind on its first attempt (avoids the discovery-race retry
-// storm). Paths are relative to the test package's working directory.
-func InstallCRDs(dirs ...string) env.Func {
-	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-		r, err := resources.New(cfg.Client().RESTConfig())
-		if err != nil {
-			return ctx, fmt.Errorf("new resources client: %w", err)
-		}
-		if err := apiextensionsv1.AddToScheme(r.GetScheme()); err != nil {
-			return ctx, fmt.Errorf("add apiextensions scheme: %w", err)
-		}
-		for _, dir := range dirs {
-			if err := decoder.ApplyWithManifestDir(ctx, r, dir, "*.yaml", nil); err != nil {
-				return ctx, fmt.Errorf("apply CRDs from %s: %w", dir, err)
-			}
-		}
-
-		var crds apiextensionsv1.CustomResourceDefinitionList
-		if err := r.List(ctx, &crds); err != nil {
-			return ctx, fmt.Errorf("list CRDs: %w", err)
-		}
-		for i := range crds.Items {
-			crd := &crds.Items[i]
-			err := wait.For(
-				conditions.New(r).ResourceMatch(crd, func(obj k8s.Object) bool {
-					c, ok := obj.(*apiextensionsv1.CustomResourceDefinition)
-					if !ok {
-						return false
-					}
-					for _, cond := range c.Status.Conditions {
-						if cond.Type == apiextensionsv1.Established && cond.Status == apiextensionsv1.ConditionTrue {
-							return true
-						}
-					}
-					return false
-				}),
-				wait.WithTimeout(60*time.Second),
-				wait.WithInterval(time.Second),
-			)
-			if err != nil {
-				return ctx, fmt.Errorf("CRD %s not Established: %w", crd.Name, err)
-			}
-		}
-		return ctx, nil
-	}
+	return []env.Func{funcs.InstallCRDs(controllerCRDDirs...), cp.Setup}, cp.Teardown
 }
 
 // ControlPlane runs this repo's controllers in-process against the suite's
