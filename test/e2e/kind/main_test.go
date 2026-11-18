@@ -22,8 +22,8 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envfuncs"
 	"sigs.k8s.io/e2e-framework/support/kind"
 
-	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/config"
 	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/funcs"
+	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/product"
 )
 
 // testenv is the shared suite environment. Features reference it via
@@ -51,7 +51,7 @@ func TestMain(m *testing.M) {
 	// (or the old run.sh) left behind, e.g. external-model-two-plane.
 	clusterName := envconf.RandomName("aigc-e2e", 16)
 
-	controlPlane := &config.ControlPlane{
+	controlPlane := &product.ControlPlane{
 		ManifestPath: "../../../config/manifests/external-model/overlays/odh",
 	}
 

@@ -1,0 +1,36 @@
+# The standard cert-manager self-signed-CA bootstrap, used on kind in place of
+# the OpenShift service-ca operator: a self-signed root CA and a CA ClusterIssuer
+# that signs the ext-proc serving certs. The CA cert (cert-manager/e2e-ca secret)
+# is published into the gateway namespace as the service-ca.crt trust bundle.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: e2e-selfsigned
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: e2e-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: ai-gateway-e2e-ca
+  secretName: e2e-ca
+  duration: 8760h # 1y
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  issuerRef:
+    name: e2e-selfsigned
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: e2e-ca-issuer
+spec:
+  ca:
+    secretName: e2e-ca # read from cert-manager's cluster-resource-namespace

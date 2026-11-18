@@ -6,25 +6,45 @@ stays consistent.
 
 ## Layout
 
+The harness is split into a **generic layer** (reusable across control-plane repos
+— the convergence target) and a **product layer** (this repo's specifics). The
+generic layer knows nothing about the AI Gateway controller; the product supplies
+it via the `config.Product` seam.
+
 ```
 test/e2e/
-  config/
-    environment.go   UNTAGGED. Environment (embeds env.Environment): flags,
-                     test suites, labels, cluster lifecycle, InstallDeps.
-    controller.go    //go:build e2e. The "install the product" layer:
-                     InstallController, InstallCRDs, ControlPlane (in-process
-                     reconcilers). Imports controller-runtime + pkg/{controller,tenant}.
-  funcs/             UNTAGGED. The fixture library (reusable features.Func / env.Func):
-    env.go           EnvFuncs, AsFeaturesFunc, AddTypesToScheme, InstallMetalLB/
-                     GatewayAPI/Istio, LoadImage, InstallCRDs, ApplyManifests +
-                     WaitForDeploymentAvailable (suite-level infra, env.Func).
+  config/            UNTAGGED, GENERIC. The environment scaffold.
+    environment.go   Environment (embeds env.Environment): flags, test suites,
+                     labels, cluster lifecycle. Delegates product concerns via
+                     WithProduct. No controller/aigc imports.
+    product.go       The Product interface: InstallDeps / AddTypesToScheme /
+                     Enabled / Install. The per-repo seam.
+  funcs/             UNTAGGED, GENERIC. The reusable fixture library:
+    env.go           EnvFuncs, AsFeaturesFunc, InstallMetalLB/GatewayAPI/Istio
+                     (functional options), LoadImage, InstallCRDs, ApplyManifests,
+                     WaitForDeploymentAvailable.
+    deps.go          Deps builder: NewDeps().WithMetalLB(...).WithGatewayAPI(...)...
+                     .Build() — composes an ordered []env.Func dep stack.
     feature.go       AllOf, ApplyResources/DeleteResources, Create/Delete,
                      DeploymentBecomesAvailableWithin, ResourceCreatedWithin,
                      GatewayClient (build an SDK client for the gateway's LB IP).
+  gateway/           UNTAGGED, GENERIC. A small HTTP SDK for the gateway:
+                     gateway.New(baseURL), Client.ChatCompletion /
+                     ChatCompletionStream / Post, Response. Pure HTTP — no
+                     Kubernetes; funcs.GatewayClient resolves the IP.
+  sim/               Standalone sim backends, each its OWN Go module (so
+                     `go build ./...` at the repo root ignores them) built into an
+                     image by the dep stack (funcs.Deps.WithBuiltImage):
+    recorder/        A self-identifying OpenAI-compatible backend: stamps its
+                     PROVIDER_NAME into every response's "provider" field and logs
+                     requests at /__test/observations. The attribution signal for
+                     provider-selection tests. HTTP-only, credential-free (Tier 1).
+  product/           //go:build e2e, PRODUCT-SPECIFIC. This repo's config.Product.
+    aigateway.go     AIGateway (implements config.Product): flags (-extproc-image,
+                     -run-controller), InstallDeps (the Deps builder), AddTypesToScheme,
+                     ControlPlane (in-process reconcilers). Imports controller-runtime
+                     + pkg/{controller,tenant}.
     fixtures.go      Code fixtures: ReadyTenant, ExternalProvider/Model, ProviderSecret.
-  gateway/           UNTAGGED. A small HTTP SDK for the gateway: gateway.New(baseURL),
-                     Client.ChatCompletion / ChatCompletionStream / Post, Response.
-                     Pure HTTP — no Kubernetes; funcs.GatewayClient resolves the IP.
   manifests/
     backends/        shared sim backend (applied once in TestMain, not per-test).
     gie/             Gateway API Inference Extension InferencePool CRD (InstallDeps).
@@ -40,19 +60,21 @@ test/e2e/
 
 ## The build-tag rule (do not break `go build ./...`)
 
-- `config/environment.go` and everything in `funcs/` are **untagged** libraries.
-- Files that import controller-runtime or the reconcilers (`config/controller.go`)
-  and all `package e2e` files (`main_test.go`, `consts.go`, `*_test.go`) are
-  **`//go:build e2e`**.
-- A package must keep **at least one untagged file**, or `go build ./...` fails
-  with "build constraints exclude all Go files". That is why `config` is split:
-  `environment.go` (untagged) + `controller.go` (e2e). Methods of `Environment`
-  may live in either file.
+- The **generic layer** (`config/`, `funcs/`, `gateway/`) is **untagged** and has
+  **no aigc/controller-runtime imports** — that is what keeps it reusable and
+  importable on a plain `go build ./...`.
+- The **product layer** (`product/`) and all `package e2e` files (`main_test.go`,
+  `consts.go`, `*_test.go`) import controller-runtime + the reconcilers, so they
+  are **`//go:build e2e`**.
+- Anything that imports the controller, the reconcilers, or the CRD type packages
+  belongs in `product/` (or a test file), never in the generic layer. If you reach
+  for an aigc import inside `config`/`funcs`/`gateway`, that's the signal it belongs
+  on the `Product` instead.
 
 Verify any change with both:
 ```
-go build ./test/e2e/config/ ./test/e2e/funcs/      # untagged must pass
-go vet -tags=e2e ./test/e2e/ ./test/e2e/kind/      # tagged must pass
+go build ./test/e2e/config/ ./test/e2e/funcs/ ./test/e2e/gateway/   # generic must pass
+go vet -tags=e2e ./test/e2e/ ./test/e2e/kind/ ./test/e2e/product/   # tagged must pass
 ```
 
 ## Fixtures: two kinds, pick per object
@@ -60,8 +82,9 @@ go vet -tags=e2e ./test/e2e/ ./test/e2e/kind/      # tagged must pass
 - **YAML** (`manifests/<area>/*.yaml` via `funcs.ApplyResources(dir, pattern)`) for
   the opaque static stack (backends, Gateway, EnvoyFilter). Paths are relative to
   the `test/e2e` package dir — `go test` sets cwd there (no `go:embed`).
-- **Code** (`funcs` builders + `funcs.Create(...)`) for the CRs a test
-  parameterizes (ExternalProvider/Model, tenants). Add builders to `funcs/fixtures.go`.
+- **Code** (`product` builders + `funcs.Create(...)`) for the CRs a test
+  parameterizes (ExternalProvider/Model, tenants). `funcs.Create` is the generic
+  applier; the CR builders are aigc-specific, so add them to `product/fixtures.go`.
 
 ## Test shape (convention)
 
@@ -108,13 +131,21 @@ go vet -tags=e2e ./test/e2e/ ./test/e2e/kind/      # tagged must pass
 Every Feature MUST set `config.LabelTestSuite` — `TestMain`'s `BeforeEachFeature`
 fails the run otherwise.
 
-## Lifecycle (owned by config.Environment)
+## Lifecycle (generic Environment + the Product seam)
 
-`CreateClusterFunc` → `InstallDeps` (metallb → Gateway API → istio → load image)
-→ shared backend (`ApplyManifests manifests/backends` + wait) → `InstallController`
-(installs the controller CRDs + runs the reconcilers in-process with the real
-ext-proc image) → `DestroyClusterFunc`. Shared infra belongs here; per-test CRs
-belong in a feature's `WithSetup`.
+`TestMain` wires a `config.Environment` (generic: cluster lifecycle, suites,
+labels) to a `product.AIGateway` via `environment.WithProduct(...)`. The order:
+
+`CreateClusterFunc` (generic) → `Product.InstallDeps` (the product's ordered
+`funcs.NewDeps()` stack: metallb → Gateway API → GIE CRD → istio → load image →
+shared backend + wait) → suite-specific setup → `Product.AddTypesToScheme` →
+`Product.Install` (controller CRDs + reconcilers in-process, real ext-proc image,
+gated on `-run-controller`) → `DestroyClusterFunc` (generic).
+
+Adding a reusable **generic** installer → `funcs/` (+ a `Deps.WithX` method).
+Adding anything **aigc-specific** (a dep, a CR type, control-plane wiring) → the
+`product` package, behind the `Product` interface. Per-test CRs belong in a
+feature's `WithSetup`.
 
 ## Conventions
 
@@ -150,6 +181,12 @@ Flags: `-create-cluster`, `-destroy-cluster`, `-install-deps`, `-run-controller`
 - `TestBBR` (bbr_test.go) — controller-driven body-based routing: CRs →
   controller renders the ext-proc → body `model` routes. Needs the ext-proc image
   loaded (baseline does this) + the provider transport.
+- `TestProviderSelectionWeighted` (provider_selection_test.go) — one client model
+  bound to two weighted providers (4:1); samples 200 requests and checks the served
+  distribution against the 80/20 split with a chi-square goodness-of-fit test
+  (df=1, alpha=0.001). Ported from kind-env's e2e-static-provider-weights.py. Two
+  recorder sims (sim/recorder, manifests/provider-selection) stamp their identity
+  into each response; attribution reads the "provider" field (providerFromResponse).
 - `TestLLMD` (llmd_test.go) — self-hosted / llm-d via GIE: istio routes to an
   InferencePool, the EPP picks a vLLM pod. Pure data-plane (NOT controller-driven —
   no llm-d reconciliation exists here; RHAIGW-468 groundwork). EPP + pool are

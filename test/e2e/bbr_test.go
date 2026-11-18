@@ -14,6 +14,7 @@ import (
 	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/config"
 	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/funcs"
 	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/gateway"
+	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/product"
 )
 
 // TestBBR is true, controller-driven body-based routing: create the CRs and let the
@@ -39,14 +40,20 @@ func TestBBR(t *testing.T) {
 			WithLabel(config.LabelTestSuite, config.TestSuiteDefault).
 			WithSetup("CRs applied; controller provisions the ext-proc", funcs.AllOf(
 				// The sim backend is suite-level infra (TestMain). Here: just the CRs.
-				funcs.ReadyTenant(ns),
+				product.ReadyTenant(ns),
+				// Issue the ext-proc serving certs (cert-manager; service-ca stand-in).
+				product.ExtProcServingCerts(ns),
+				// Mount the CA into the gateway so it trusts those certs.
+				product.MountGatewayCATrust(),
 				funcs.Create(
-					funcs.ProviderSecret("sim", ns),
-					funcs.ExternalProvider("sim", ns, backend),
-					funcs.ExternalModel("granite-8b", ns, "granite-8b", "sim", "granite-8b"),
+					product.ProviderSecret("sim", ns),
+					product.ExternalProvider("sim", ns, backend),
+					product.ExternalModel("granite-8b", ns, "granite-8b", "sim", "granite-8b"),
 				),
-				// The controller must render + run the ext-proc workload.
+				// The controller must render + run the ext-proc workload, and the
+				// gateway proxy must be Ready (its LB IP only routes once it is).
 				funcs.DeploymentBecomesAvailableWithin(5*time.Minute, ns, "payload-processing-external-model-"+ns),
+				funcs.DeploymentBecomesAvailableWithin(3*time.Minute, "istio-system", "ai-gateway-istio"),
 			)).
 			Assess("body `model` alone routes to the backend (200)",
 				func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
@@ -75,9 +82,9 @@ func TestBBR(t *testing.T) {
 				},
 			).
 			WithTeardown("remove the CRs", funcs.Delete(
-				funcs.ExternalModel("granite-8b", ns, "granite-8b", "sim", "granite-8b"),
-				funcs.ExternalProvider("sim", ns, backend),
-				funcs.ProviderSecret("sim", ns),
+				product.ExternalModel("granite-8b", ns, "granite-8b", "sim", "granite-8b"),
+				product.ExternalProvider("sim", ns, backend),
+				product.ProviderSecret("sim", ns),
 			)).
 			Feature(),
 	)

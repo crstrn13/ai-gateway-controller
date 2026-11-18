@@ -17,8 +17,6 @@ import (
 	"sigs.k8s.io/e2e-framework/support/kind"
 
 	"flag"
-
-	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/funcs"
 )
 
 // LabelTestSuite marks which suite a Feature belongs to. Every Feature must set
@@ -38,12 +36,11 @@ type Environment struct {
 	createCluster  *bool
 	destroyCluster *bool
 	installDeps    *bool
-	runController  *bool
 	clusterName    *string
-	extProcImage   *string
-	extProcRepo    *string
 	gatewayAPIVer  *string
 	metalLBVer     *string
+
+	product Product
 
 	selected *selectedTestSuite
 	suites   map[string]testSuite
@@ -86,11 +83,8 @@ func NewEnvironmentFromFlags() Environment {
 	e := Environment{suites: map[string]testSuite{}}
 	e.createCluster = flag.Bool("create-cluster", true, "create a kind cluster before running (false: use the current kubeconfig)")
 	e.destroyCluster = flag.Bool("destroy-cluster", true, "destroy the kind cluster when tests complete")
-	e.installDeps = flag.Bool("install-deps", true, "install metallb + Gateway API + istio + load the ext-proc image")
-	e.runController = flag.Bool("run-controller", true, "run the AI Gateway reconcilers in-process (installs the controller's CRDs first)")
+	e.installDeps = flag.Bool("install-deps", true, "install the product's dependency stack (cluster add-ons, CRDs, images, shared infra)")
 	e.clusterName = flag.String("cluster-name", "", "kind cluster name (random if empty)")
-	e.extProcImage = flag.String("extproc-image", cmp.Or(os.Getenv("AIGW_EXTPROC_IMAGE"), "praxis-extproc:dev"), "ext-proc image to load into kind")
-	e.extProcRepo = flag.String("extproc-repo", os.Getenv("AIGW_EXTPROC_REPO"), "praxis-extproc checkout (for serving overlays, until vendored)")
 	e.gatewayAPIVer = flag.String("gateway-api-version", cmp.Or(os.Getenv("AIGW_GATEWAY_API_VERSION"), "v1.2.1"), "Gateway API release for the CRD bundle")
 	e.metalLBVer = flag.String("metallb-version", cmp.Or(os.Getenv("AIGW_METALLB_VERSION"), "v0.14.9"), "metallb release for the LoadBalancer IP pool")
 	e.selected = &selectedTestSuite{}
@@ -180,9 +174,18 @@ func (e *Environment) GetClusterName() string {
 func (e *Environment) ShouldCreateCluster() bool  { return *e.createCluster }
 func (e *Environment) ShouldDestroyCluster() bool { return *e.createCluster && *e.destroyCluster }
 func (e *Environment) ShouldInstallDeps() bool    { return *e.installDeps }
-func (e *Environment) ShouldRunController() bool  { return *e.runController }
-func (e *Environment) ExtProcImage() string       { return *e.extProcImage }
-func (e *Environment) ExtProcRepo() string        { return *e.extProcRepo }
+func (e *Environment) MetalLBVersion() string     { return *e.metalLBVer }
+func (e *Environment) GatewayAPIVersion() string  { return *e.gatewayAPIVer }
+
+// WithProduct sets the per-repo Product (control plane, deps, CRD types). Call it
+// in TestMain before setup composition.
+func (e *Environment) WithProduct(p Product) *Environment {
+	e.product = p
+	return e
+}
+
+// Product returns the configured Product.
+func (e *Environment) Product() Product { return e.product }
 
 // --- setup composition -------------------------------------------------------
 
@@ -194,17 +197,4 @@ func (e *Environment) CreateClusterFunc() env.Func {
 // DestroyClusterFunc returns the cluster-destroy env.Func.
 func (e *Environment) DestroyClusterFunc() env.Func {
 	return envfuncs.DestroyCluster(e.GetClusterName())
-}
-
-// InstallDeps returns the dependency-stack env.Funcs: metallb → Gateway API →
-// istio → load the ext-proc image. This is the AI Gateway analogue of
-// Crossplane's HelmInstallBaseCrossplane.
-func (e *Environment) InstallDeps() []env.Func {
-	return []env.Func{
-		funcs.InstallMetalLB(*e.metalLBVer),
-		funcs.InstallGatewayAPI(*e.gatewayAPIVer),
-		funcs.InstallCRDs("manifests/gie"), // GIE InferencePool CRD, before istio (GIE needs it)
-		funcs.InstallIstio(),
-		funcs.LoadImage(e.GetClusterName(), *e.extProcImage, e.ShouldCreateCluster()),
-	}
 }

@@ -6,7 +6,6 @@ import (
 	"context"
 	"os"
 	"testing"
-	"time"
 
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -16,7 +15,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/config"
-	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/funcs"
+	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/product"
 )
 
 // environment is the shared suite configuration. Test files reference it via
@@ -28,6 +27,10 @@ func TestMain(m *testing.M) {
 	// Note: do NOT call klog.InitFlags here — envconf.NewFromFlags() already
 	// registers klog's flags (incl. -v); calling it twice panics with
 	// "flag redefined". -v=N still works via the framework's own parsing.
+
+	// Set the repo-specific Product before flags are parsed — its constructor
+	// registers the product's own flags (-extproc-image, -run-controller, …).
+	environment.WithProduct(product.NewAIGateway())
 
 	cfg, err := envconf.NewFromFlags()
 	if err != nil {
@@ -53,24 +56,21 @@ func TestMain(m *testing.M) {
 	environment.SetEnvironment(env.NewWithConfig(cfg))
 
 	if environment.ShouldInstallDeps() {
-		setup = append(setup, environment.InstallDeps()...)
-		// Shared environment infra: the sim backend tests route to.
-		setup = append(setup,
-			funcs.ApplyManifests("manifests/backends", "*.yaml"),
-			funcs.WaitForDeploymentAvailable("llm", "internal-model", 3*time.Minute),
-		)
+		// The product owns its dependency stack (cluster add-ons, CRDs, image,
+		// shared backend infra) and the order they install in.
+		setup = append(setup, environment.Product().InstallDeps(&environment)...)
 	}
 	// Suite-specific setup (e.g. a future llm-d suite that also installs a pool).
 	setup = append(setup, environment.GetSelectedSuiteAdditionalEnvSetup()...)
-	// Always register our CRD types on the client scheme.
-	setup = append(setup, funcs.AddTypesToScheme())
+	// Always register the product's CRD types on the client scheme.
+	setup = append(setup, environment.Product().AddTypesToScheme())
 
 	// The AI Gateway reconcilers, run in-process (the "install the product" step,
 	// analogous to Crossplane's HelmInstallBaseCrossplane). Their watched CRDs
 	// must exist before the manager starts, so install those first. Given the real
 	// ext-proc image so the pods it renders actually run.
-	if environment.ShouldRunController() {
-		cpSetup, cpTeardown := environment.InstallController()
+	if environment.Product().Enabled() {
+		cpSetup, cpTeardown := environment.Product().Install()
 		setup = append(setup, cpSetup...)
 		finish = append([]env.Func{cpTeardown}, finish...) // stop it before the cluster goes away
 	}

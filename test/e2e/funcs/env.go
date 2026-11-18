@@ -17,6 +17,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/e2e-framework/klient/decoder"
 	"sigs.k8s.io/e2e-framework/klient/k8s"
@@ -26,10 +28,28 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
-
-	aigatewayv1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/aigateway/v1alpha1"
-	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/inference/v1alpha1"
 )
+
+// Default versions/settings for the dependency installers. Each installer takes
+// functional options; an option left unset falls back to the default here, so a
+// caller passing an empty flag value does not clobber the default (see the
+// With* option constructors, which ignore empty inputs).
+const (
+	defaultMetalLBVersion     = "v0.14.9"
+	defaultGatewayAPIVersion  = "v1.2.1"
+	defaultIstioProfile       = "minimal"
+	defaultCertManagerVersion = "v1.15.3"
+	defaultKuadrantVersion    = "1.3.1"
+)
+
+// kuadrantCR bootstraps Authorino + Limitador once the operator is installed.
+const kuadrantCR = `apiVersion: kuadrant.io/v1beta1
+kind: Kuadrant
+metadata:
+  name: kuadrant
+  namespace: kuadrant-system
+spec: {}
+`
 
 // ApplyManifests applies a directory of manifests as a suite-level setup step
 // (env.Func) — for shared environment infra (backends, etc.), not per-test CRs.
@@ -136,29 +156,69 @@ func AsFeaturesFunc(fn env.Func) features.Func {
 	}
 }
 
-// AddTypesToScheme registers the controller's CRD types on the suite client's
-// scheme, so typed Create/Get work for inference + aigateway kinds.
-func AddTypesToScheme() env.Func {
-	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-		s := cfg.Client().Resources().GetScheme()
-		if err := inferencev1alpha1.AddToScheme(s); err != nil {
-			return ctx, err
+// --- dependency installers (functional options) ------------------------------
+
+// MetalLBOption configures InstallMetalLB.
+type MetalLBOption func(*metalLBConfig)
+
+type metalLBConfig struct{ version string }
+
+// MetalLBVersion pins the metallb release. Empty is ignored (keeps the default).
+func MetalLBVersion(v string) MetalLBOption {
+	return func(c *metalLBConfig) {
+		if v != "" {
+			c.version = v
 		}
-		if err := aigatewayv1alpha1.AddToScheme(s); err != nil {
-			return ctx, err
-		}
-		_ = clientgoscheme.AddToScheme(s)
-		return ctx, nil
 	}
+}
+
+// GatewayAPIOption configures InstallGatewayAPI.
+type GatewayAPIOption func(*gatewayAPIConfig)
+
+type gatewayAPIConfig struct{ version string }
+
+// GatewayAPIVersion pins the Gateway API release. Empty is ignored.
+func GatewayAPIVersion(v string) GatewayAPIOption {
+	return func(c *gatewayAPIConfig) {
+		if v != "" {
+			c.version = v
+		}
+	}
+}
+
+// IstioOption configures InstallIstio.
+type IstioOption func(*istioConfig)
+
+type istioConfig struct {
+	profile            string
+	inferenceExtension bool
+}
+
+// IstioProfile sets the istioctl install profile. Empty is ignored.
+func IstioProfile(p string) IstioOption {
+	return func(c *istioConfig) {
+		if p != "" {
+			c.profile = p
+		}
+	}
+}
+
+// IstioInferenceExtension toggles the Gateway API Inference Extension (GIE).
+func IstioInferenceExtension(on bool) IstioOption {
+	return func(c *istioConfig) { c.inferenceExtension = on }
 }
 
 // InstallMetalLB installs metallb and an IPAddressPool carved from the kind
 // docker network, so the gateway Service gets a host-routable LB IP
 // (the pool is <ipv4-subnet-base>.200-.250; tests resolve the gateway's assigned
 // IP from its Service, so the exact base doesn't need to be known ahead of time).
-func InstallMetalLB(version string) env.Func {
+func InstallMetalLB(opts ...MetalLBOption) env.Func {
+	o := metalLBConfig{version: defaultMetalLBVersion}
+	for _, opt := range opts {
+		opt(&o)
+	}
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-		url := fmt.Sprintf("https://raw.githubusercontent.com/metallb/metallb/%s/config/manifests/metallb-native.yaml", version)
+		url := fmt.Sprintf("https://raw.githubusercontent.com/metallb/metallb/%s/config/manifests/metallb-native.yaml", o.version)
 		if err := sh(ctx, cfg, "kubectl", "apply", "-f", url); err != nil {
 			return ctx, err
 		}
@@ -192,9 +252,13 @@ metadata: {name: e2e-l2, namespace: metallb-system}
 
 // InstallGatewayAPI installs the upstream Gateway API CRDs (istio needs them to
 // serve Gateway/HTTPRoute, which the suite's manifests are).
-func InstallGatewayAPI(version string) env.Func {
+func InstallGatewayAPI(opts ...GatewayAPIOption) env.Func {
+	o := gatewayAPIConfig{version: defaultGatewayAPIVersion}
+	for _, opt := range opts {
+		opt(&o)
+	}
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-		url := fmt.Sprintf("https://github.com/kubernetes-sigs/gateway-api/releases/download/%s/standard-install.yaml", version)
+		url := fmt.Sprintf("https://github.com/kubernetes-sigs/gateway-api/releases/download/%s/standard-install.yaml", o.version)
 		if err := sh(ctx, cfg, "kubectl", "apply", "-f", url); err != nil {
 			return ctx, err
 		}
@@ -206,17 +270,160 @@ func InstallGatewayAPI(version string) env.Func {
 	}
 }
 
-// InstallIstio installs istio (minimal + inference extension). istioctl is a
-// sanctioned shell-out — there is no pure-Go install path.
-func InstallIstio() env.Func {
+// InstallIstio installs istio via istioctl (a sanctioned shell-out — there is no
+// pure-Go install path). Defaults to the minimal profile with the Gateway API
+// Inference Extension on; override with IstioProfile / IstioInferenceExtension.
+func InstallIstio(opts ...IstioOption) env.Func {
+	o := istioConfig{profile: defaultIstioProfile, inferenceExtension: true}
+	for _, opt := range opts {
+		opt(&o)
+	}
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-		if err := sh(ctx, cfg, "istioctl", "install", "-y",
-			"--set", "profile=minimal",
-			"--set", "values.pilot.env.ENABLE_GATEWAY_API_INFERENCE_EXTENSION=true",
-		); err != nil {
+		args := []string{"install", "-y", "--set", "profile=" + o.profile}
+		if o.inferenceExtension {
+			args = append(args, "--set", "values.pilot.env.ENABLE_GATEWAY_API_INFERENCE_EXTENSION=true")
+		}
+		if err := sh(ctx, cfg, "istioctl", args...); err != nil {
 			return ctx, err
 		}
 		return ctx, sh(ctx, cfg, "kubectl", "rollout", "status", "deployment/istiod", "-n", "istio-system", "--timeout=180s")
+	}
+}
+
+// BuildImage builds a container image with `docker build -t tag contextDir`
+// (Dockerfile at contextDir/Dockerfile). A sanctioned shell-out: building images
+// has no pure-Go path. contextDir is relative to the test package working dir.
+func BuildImage(contextDir, tag string) env.Func {
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		return ctx, sh(ctx, cfg, "docker", "build", "-t", tag, contextDir)
+	}
+}
+
+// CertManagerOption configures InstallCertManager.
+type CertManagerOption func(*certManagerConfig)
+
+type certManagerConfig struct{ version string }
+
+// CertManagerVersion pins the cert-manager release. Empty is ignored.
+func CertManagerVersion(v string) CertManagerOption {
+	return func(c *certManagerConfig) {
+		if v != "" {
+			c.version = v
+		}
+	}
+}
+
+// InstallCertManager installs cert-manager (the standard kind/k8s way to issue
+// TLS) and waits for its CRDs + deployments to be ready, so Issuer/Certificate
+// resources can be applied immediately after.
+func InstallCertManager(opts ...CertManagerOption) env.Func {
+	o := certManagerConfig{version: defaultCertManagerVersion}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		url := fmt.Sprintf("https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml", o.version)
+		if err := sh(ctx, cfg, "kubectl", "apply", "-f", url); err != nil {
+			return ctx, err
+		}
+		if err := sh(ctx, cfg, "kubectl", "wait", "--for=condition=established", "--timeout=120s",
+			"crd/certificates.cert-manager.io", "crd/issuers.cert-manager.io", "crd/clusterissuers.cert-manager.io"); err != nil {
+			return ctx, err
+		}
+		return ctx, sh(ctx, cfg, "kubectl", "wait", "--for=condition=Available", "deploy", "--all",
+			"-n", "cert-manager", "--timeout=180s")
+	}
+}
+
+// KuadrantOption configures InstallKuadrant.
+type KuadrantOption func(*kuadrantConfig)
+
+type kuadrantConfig struct{ version string }
+
+// KuadrantVersion pins the kuadrant-operator chart version. Empty is ignored.
+func KuadrantVersion(v string) KuadrantOption {
+	return func(c *kuadrantConfig) {
+		if v != "" {
+			c.version = v
+		}
+	}
+}
+
+// InstallKuadrant installs the kuadrant-operator (Authorino + Limitador) and
+// bootstraps it. Kuadrant is what attaches the WasmPlugin to the gateway that the
+// ext-proc EnvoyFilters anchor to (INSERT_BEFORE/AFTER the kuadrant wasm filter);
+// without it the ext-proc filters are never inserted. Installed after istio, so
+// the operator is restarted to pick up istio's gateway provider.
+func InstallKuadrant(opts ...KuadrantOption) env.Func {
+	o := kuadrantConfig{version: defaultKuadrantVersion}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		if err := sh(ctx, cfg, "helm", "repo", "add", "--force-update", "kuadrant", "https://kuadrant.io/helm-charts/"); err != nil {
+			return ctx, err
+		}
+		_ = sh(ctx, cfg, "helm", "repo", "update", "kuadrant")
+		if err := sh(ctx, cfg, "helm", "upgrade", "--install", "kuadrant-operator", "kuadrant/kuadrant-operator",
+			"--namespace", "kuadrant-system", "--create-namespace", "--version", o.version, "--wait", "--timeout", "350s"); err != nil {
+			return ctx, err
+		}
+		// Restart so the operator rediscovers istio (installed before this step).
+		_ = sh(ctx, cfg, "kubectl", "-n", "kuadrant-system", "rollout", "restart", "deployment/kuadrant-operator-controller-manager")
+		if err := sh(ctx, cfg, "kubectl", "-n", "kuadrant-system", "rollout", "status",
+			"deployment/kuadrant-operator-controller-manager", "--timeout=120s"); err != nil {
+			return ctx, err
+		}
+		if err := shStdin(ctx, cfg, kuadrantCR, "kubectl", "apply", "-f", "-"); err != nil {
+			return ctx, err
+		}
+		// The operator creates authorino + limitador from the CR; wait for both.
+		return ctx, sh(ctx, cfg, "bash", "-c",
+			"until kubectl -n kuadrant-system get deploy authorino limitador-limitador >/dev/null 2>&1; do sleep 5; done; "+
+				"kubectl -n kuadrant-system wait --for=condition=Available deploy --all --timeout=180s")
+	}
+}
+
+// KubectlApply applies a manifest path, retrying to ride out the cert-manager
+// webhook becoming ready (it can reject the first Issuer/Certificate writes).
+// Path is relative to the test package working directory.
+func KubectlApply(path string) env.Func {
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		var lastErr error
+		for range 6 {
+			if lastErr = sh(ctx, cfg, "kubectl", "apply", "-f", path); lastErr == nil {
+				return ctx, nil
+			}
+			time.Sleep(10 * time.Second)
+		}
+		return ctx, fmt.Errorf("kubectl apply %s: %w", path, lastErr)
+	}
+}
+
+// PublishCABundle copies the ca.crt from a cert-manager CA secret into a ConfigMap
+// (key service-ca.crt) in another namespace — the CA the gateway mounts to trust
+// the ext-proc serving certs. Waits for the CA secret to be issued first.
+func PublishCABundle(caSecretNS, caSecretName, targetNS, targetCM string) env.Func {
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		r := cfg.Client().Resources()
+		var secret corev1.Secret
+		err := wait.For(func(context.Context) (bool, error) {
+			if e := r.Get(ctx, caSecretName, caSecretNS, &secret); e != nil {
+				return false, nil
+			}
+			return len(secret.Data["ca.crt"]) > 0, nil
+		}, wait.WithTimeout(120*time.Second), wait.WithInterval(3*time.Second))
+		if err != nil {
+			return ctx, fmt.Errorf("CA secret %s/%s not issued: %w", caSecretNS, caSecretName, err)
+		}
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: targetCM, Namespace: targetNS},
+			Data:       map[string]string{"service-ca.crt": string(secret.Data["ca.crt"])},
+		}
+		if err := r.Create(ctx, cm); err != nil && !apierrors.IsAlreadyExists(err) {
+			return ctx, fmt.Errorf("publish CA configmap %s/%s: %w", targetNS, targetCM, err)
+		}
+		return ctx, nil
 	}
 }
 

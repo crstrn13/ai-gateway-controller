@@ -90,6 +90,10 @@ test-e2e: ## run the e2e suite (flag-driven; all areas). Filter with E2E_LABELS=
 test-e2e-bbr: ## run only the BBR area of the e2e suite
 	$(MAKE) test-e2e E2E_LABELS=area=bbr
 
+.PHONY: test-e2e-selection
+test-e2e-selection: ## run only the provider-selection area of the e2e suite
+	$(MAKE) test-e2e E2E_LABELS=area=intelligent-routing
+
 .PHONY: tidy
 tidy: ##	go mod tidy
 	go mod tidy
