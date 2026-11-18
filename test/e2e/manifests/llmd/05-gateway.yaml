@@ -1,0 +1,19 @@
+# The istio Gateway the llm-d HTTPRoute (40-route.yaml) attaches to. Unlike BBR,
+# the llm-d path is NOT controller-driven, so no reconciler (and no ReadyTenant
+# fixture) provisions this Gateway — we create it here. istio auto-provisions the
+# backing `ai-gateway-istio` Service in istio-system, which metallb gives an LB IP;
+# funcs.GatewayClient resolves that IP in the Assess.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ai-gateway
+  namespace: istio-system
+spec:
+  gatewayClassName: istio
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All

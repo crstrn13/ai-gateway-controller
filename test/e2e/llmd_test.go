@@ -43,6 +43,10 @@ func TestLLMD(t *testing.T) {
 			WithLabel(config.LabelTestSuite, config.TestSuiteDefault).
 			WithSetup("EPP + InferencePool + members + GIE route applied and ready", funcs.AllOf(
 				funcs.ApplyResources("manifests/llmd", "*.yaml"),
+				// istio auto-provisions the ai-gateway-istio Deployment/Service for the
+				// Gateway in 05-gateway.yaml; wait for it so the LB IP is assigned before
+				// the Assess resolves it via funcs.GatewayClient.
+				funcs.DeploymentBecomesAvailableWithin(3*time.Minute, "istio-system", "ai-gateway-istio"),
 				funcs.DeploymentBecomesAvailableWithin(3*time.Minute, "llmd", "llmd-epp"),
 				funcs.DeploymentBecomesAvailableWithin(5*time.Minute, "llmd", "vcr-1"),
 				funcs.DeploymentBecomesAvailableWithin(5*time.Minute, "llmd", "vcr-2"),
