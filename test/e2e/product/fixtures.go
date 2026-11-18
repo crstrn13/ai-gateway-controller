@@ -13,6 +13,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -43,11 +44,13 @@ const (
 // are ignored for Gateway API gateways, so MountGatewayCATrust patches the
 // istio-provisioned Deployment directly (the patch persists; istio does not revert).
 const (
-	caTrustVolume    = "service-ca-trust"
-	caTrustConfigMap = "e2e-service-ca"
-	caTrustDir       = "/var/run/secrets/kubernetes.io/serviceaccount"
-	gatewayProxyCtr  = "istio-proxy"
-	gatewayDeploy    = "ai-gateway-istio" // istio names it <gateway>-istio
+	caTrustVolume     = "service-ca-trust"
+	caTrustConfigMap  = "e2e-service-ca"
+	caTrustDir        = "/var/run/secrets/kubernetes.io/serviceaccount"
+	caTrustFile       = caTrustDir + "/service-ca.crt" // provider tls.caCertificates path
+	gatewayProxyCtr   = "istio-proxy"
+	gatewayDeploy     = "ai-gateway-istio" // istio names it <gateway>-istio
+	recorderHTTPSPort = 8443
 )
 
 // crClient builds a controller-runtime client with the inference types registered,
@@ -248,6 +251,92 @@ func MountGatewayCATrust() features.Func {
 	}
 }
 
+// ProviderBackend deploys a recorder sim as an ExternalProvider backend: it serves
+// HTTPS on 8443 (providers are SIMPLE-TLS HTTPS) with a cert-manager cert for its
+// own service FQDN (signed by the run CA the gateway trusts), self-identifies as
+// providerID, and records requests. Returns nothing; the endpoint to give the
+// ExternalProvider is "<name>.<ns>.svc.cluster.local:8443".
+func ProviderBackend(name, ns, providerID string) features.Func {
+	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		t.Helper()
+		cl := crClient(t, c)
+		secret := name + "-tls"
+		cert := certificate(secret, ns, secret, []string{
+			fmt.Sprintf("%s.%s.svc", name, ns),
+			fmt.Sprintf("%s.%s.svc.cluster.local", name, ns),
+		})
+		if err := cl.Create(ctx, cert); err != nil && !apierrors.IsAlreadyExists(err) {
+			t.Fatalf("create provider cert %s/%s: %v", ns, secret, err)
+		}
+		if err := cl.Create(ctx, recorderDeployment(name, ns, providerID, secret)); err != nil && !apierrors.IsAlreadyExists(err) {
+			t.Fatalf("create provider backend %s/%s: %v", ns, name, err)
+		}
+		if err := cl.Create(ctx, recorderService(name, ns)); err != nil && !apierrors.IsAlreadyExists(err) {
+			t.Fatalf("create provider service %s/%s: %v", ns, name, err)
+		}
+		return ctx
+	}
+}
+
+// ProviderEndpoint is the ExternalProvider endpoint for a ProviderBackend: a bare
+// FQDN (the CRD forbids a port), so the Service must expose 443 (→ container 8443).
+func ProviderEndpoint(name, ns string) string {
+	return fmt.Sprintf("%s.%s.svc.cluster.local", name, ns)
+}
+
+func recorderDeployment(name, ns, providerID, tlsSecret string) *appsv1.Deployment {
+	labels := map[string]string{"app": name}
+	replicas := int32(1)
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: labels},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{
+				// No istio sidecar: the provider is mesh-external and serves its own
+				// TLS; a sidecar would intercept and break the gateway's SIMPLE-TLS hop.
+				ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: map[string]string{"sidecar.istio.io/inject": "false"}},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:            "recorder",
+						Image:           recorderImage,
+						ImagePullPolicy: corev1.PullIfNotPresent,
+						Env: []corev1.EnvVar{
+							{Name: "PROVIDER_NAME", Value: providerID},
+							{Name: "TLS_DIR", Value: "/etc/tls"},
+						},
+						Ports: []corev1.ContainerPort{{ContainerPort: recorderHTTPSPort, Name: "https"}},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "tls", MountPath: "/etc/tls", ReadOnly: true},
+						},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+								Path: "/healthz", Port: intstr.FromInt(recorderHTTPSPort), Scheme: corev1.URISchemeHTTPS,
+							}},
+						},
+					}},
+					Volumes: []corev1.Volume{{
+						Name:         "tls",
+						VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: tlsSecret}},
+					}},
+				},
+			},
+		},
+	}
+}
+
+func recorderService(name, ns string) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: map[string]string{"app": name}},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app": name},
+			// Providers are reached on 443 (endpoint is FQDN-only); map it to the
+			// recorder's unprivileged 8443.
+			Ports: []corev1.ServicePort{{Name: "https", Port: 443, TargetPort: intstr.FromInt(recorderHTTPSPort)}},
+		},
+	}
+}
+
 // certificate builds a cert-manager Certificate (unstructured) signed by the run
 // CA ClusterIssuer, writing secretName in namespace ns with the given DNS SANs.
 func certificate(name, ns, secretName string, dnsNames []string) *unstructured.Unstructured {
@@ -289,6 +378,9 @@ func ExternalProvider(name, ns, endpoint string) *inferencev1alpha1.ExternalProv
 				Type:      "apikey",
 				SecretRef: inferencev1alpha1.NameReference{Name: name},
 			},
+			// Trust the recorder's serving cert via the CA we already mount into
+			// the gateway (providers are wired as SIMPLE-TLS HTTPS).
+			Config: map[string]string{"tls.caCertificates": caTrustFile},
 		},
 	}
 }

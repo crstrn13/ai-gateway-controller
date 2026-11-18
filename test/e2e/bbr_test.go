@@ -30,8 +30,10 @@ import (
 // TestMain; this test only adds its CRs in WithSetup.
 func TestBBR(t *testing.T) {
 	const ns = "bbr-reconciled"
-	// The suite-level sim backend (manifests/backends; internal-model in the llm namespace).
-	const backend = "internal-model.llm.svc.cluster.local"
+	// A recorder provider backend (HTTPS:8443) in the llm namespace — providers are
+	// wired as SIMPLE-TLS HTTPS, so the plain-HTTP suite sim can't serve them.
+	const providerBackend = "bbr-provider"
+	backend := product.ProviderEndpoint(providerBackend, "llm")
 
 	environment.Test(t,
 		features.NewWithDescription(t.Name(), "The controller provisions the BBR data plane from CRs; the body `model` routes.").
@@ -45,6 +47,8 @@ func TestBBR(t *testing.T) {
 				product.ExtProcServingCerts(ns),
 				// Mount the CA into the gateway so it trusts those certs.
 				product.MountGatewayCATrust(),
+				// The HTTPS provider backend the model routes to.
+				product.ProviderBackend(providerBackend, "llm", "sim"),
 				funcs.Create(
 					product.ProviderSecret("sim", ns),
 					product.ExternalProvider("sim", ns, backend),
@@ -52,6 +56,7 @@ func TestBBR(t *testing.T) {
 				),
 				// The controller must render + run the ext-proc workload, and the
 				// gateway proxy must be Ready (its LB IP only routes once it is).
+				funcs.DeploymentBecomesAvailableWithin(3*time.Minute, "llm", providerBackend),
 				funcs.DeploymentBecomesAvailableWithin(5*time.Minute, ns, "payload-processing-external-model-"+ns),
 				funcs.DeploymentBecomesAvailableWithin(3*time.Minute, "istio-system", "ai-gateway-istio"),
 			)).

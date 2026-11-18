@@ -55,7 +55,10 @@ func TestProviderSelectionWeighted(t *testing.T) {
 				product.ReadyTenant(ns),
 				product.ExtProcServingCerts(ns),
 				product.MountGatewayCATrust(),
-				funcs.ApplyResources("manifests/provider-selection", "*.yaml"),
+				// Two HTTPS recorder provider backends (providers are SIMPLE-TLS HTTPS),
+				// each self-identifying as prov-a / prov-b for attribution.
+				product.ProviderBackend("provider-a-sim", "llm", "prov-a"),
+				product.ProviderBackend("provider-b-sim", "llm", "prov-b"),
 				funcs.DeploymentBecomesAvailableWithin(3*time.Minute, "llm", "provider-a-sim"),
 				funcs.DeploymentBecomesAvailableWithin(3*time.Minute, "llm", "provider-b-sim"),
 				funcs.Create(

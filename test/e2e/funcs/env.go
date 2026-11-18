@@ -279,7 +279,10 @@ func InstallIstio(opts ...IstioOption) env.Func {
 		opt(&o)
 	}
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-		args := []string{"install", "-y", "--set", "profile=" + o.profile}
+		args := []string{"install", "-y", "--set", "profile=" + o.profile,
+			// Access logs to stdout so request failures (response flags + code
+			// details) are visible in the gateway proxy logs during e2e debugging.
+			"--set", "meshConfig.accessLogFile=/dev/stdout"}
 		if o.inferenceExtension {
 			args = append(args, "--set", "values.pilot.env.ENABLE_GATEWAY_API_INFERENCE_EXTENSION=true")
 		}

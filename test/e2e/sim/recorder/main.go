@@ -12,7 +12,9 @@
 // concern and is not what this replaces.
 //
 // Config (env): PROVIDER_NAME (required, free-form identity), LISTEN_ADDR
-// (default ":8080").
+// (default ":8443" with TLS, else ":8080"), TLS_DIR (if it holds tls.crt/tls.key
+// the recorder serves HTTPS — required when used as an ExternalProvider backend,
+// since the controller wires every provider as HTTPS).
 package main
 
 import (
@@ -45,9 +47,17 @@ func main() {
 	if provider == "" {
 		log.Fatal("PROVIDER_NAME is required")
 	}
+	tlsDir := os.Getenv("TLS_DIR")
+	crtFile, keyFile := tlsDir+"/tls.crt", tlsDir+"/tls.key"
+	useTLS := tlsDir != "" && fileExists(crtFile) && fileExists(keyFile)
+
 	addr := os.Getenv("LISTEN_ADDR")
 	if addr == "" {
-		addr = ":8080"
+		if useTLS {
+			addr = ":8443"
+		} else {
+			addr = ":8080"
+		}
 	}
 
 	rec := &recorder{provider: provider}
@@ -58,11 +68,22 @@ func main() {
 	mux.HandleFunc("/v1/chat/completions", rec.handleChat)
 	mux.HandleFunc("/v1/messages", rec.handleChat)
 
-	log.Printf("recorder ready provider=%s addr=%s", provider, addr)
+	log.Printf("recorder ready provider=%s addr=%s tls=%t", provider, addr, useTLS)
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	var err error
+	if useTLS {
+		err = srv.ListenAndServeTLS(crtFile, keyFile)
+	} else {
+		err = srv.ListenAndServe()
+	}
+	if err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 func (rec *recorder) handleObservations(w http.ResponseWriter, r *http.Request) {

@@ -38,7 +38,9 @@ test/e2e/
     recorder/        A self-identifying OpenAI-compatible backend: stamps its
                      PROVIDER_NAME into every response's "provider" field and logs
                      requests at /__test/observations. The attribution signal for
-                     provider-selection tests. HTTP-only, credential-free (Tier 1).
+                     provider-selection. Serves HTTPS:8443 when TLS_DIR holds certs
+                     (providers are SIMPLE-TLS HTTPS; see product.ProviderBackend),
+                     else HTTP:8080. Credential-free.
   product/           //go:build e2e, PRODUCT-SPECIFIC. This repo's config.Product.
     aigateway.go     AIGateway (implements config.Product): flags (-extproc-image,
                      -run-controller), InstallDeps (the Deps builder), AddTypesToScheme,
@@ -185,7 +187,7 @@ Flags: `-create-cluster`, `-destroy-cluster`, `-install-deps`, `-run-controller`
   bound to two weighted providers (4:1); samples 200 requests and checks the served
   distribution against the 80/20 split with a chi-square goodness-of-fit test
   (df=1, alpha=0.001). Ported from kind-env's e2e-static-provider-weights.py. Two
-  recorder sims (sim/recorder, manifests/provider-selection) stamp their identity
+  recorder sims (product.ProviderBackend, HTTPS) stamp their identity
   into each response; attribution reads the "provider" field (providerFromResponse).
 - `TestLLMD` (llmd_test.go) — self-hosted / llm-d via GIE: istio routes to an
   InferencePool, the EPP picks a vLLM pod. Pure data-plane (NOT controller-driven —
