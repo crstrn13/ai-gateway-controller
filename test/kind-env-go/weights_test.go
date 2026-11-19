@@ -66,6 +66,9 @@ func TestStaticProviderWeights(t *testing.T) {
 				samples int
 			}{
 				{"equal-50-50", 50, 50, 500},
+				// Small-integer weights normalize like percentages: 2:1 must fit the same
+				// 2/3 : 1/3 distribution as 66:34 would (ratio-equivalence).
+				{"unequal-2-1", 2, 1, 500},
 				{"canary-95-5", 95, 5, 500},
 			}
 			for _, tc := range cases {
