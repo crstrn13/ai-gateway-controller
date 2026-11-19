@@ -64,6 +64,16 @@ func TestProviderCATrust(t *testing.T) {
 			demoPath := "/" + tenantNamespace + "/demo/v1/chat/completions"
 			payload := map[string]any{"model": "demo", "messages": []map[string]any{{"role": "user", "content": "hello"}}}
 
+			// Establish the provider-a baseline deterministically: the attribution checks
+			// below require provider-a to be the sole active route, independent of whatever
+			// weight state a previously-run test may still be converging out of.
+			if err := patchExternalModelWeights(ctx, c, 1, 0); err != nil {
+				t.Fatalf("set provider-a baseline: %v", err)
+			}
+			if err := waitOverlay(ctx, c, "a", 2*time.Minute); err != nil {
+				t.Fatalf("provider-a baseline did not converge: %v", err)
+			}
+
 			// Always restore the file-based CA and remove the SDS secret (assertion 41).
 			defer func() {
 				if err := setProviderConfig(ctx, c, map[string]string{"tls.caCertificates": providerCAPath}); err != nil {

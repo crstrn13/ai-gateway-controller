@@ -45,6 +45,12 @@ func TestAdministrativeSwitch(t *testing.T) {
 			defer func() {
 				if err := patchExternalModelWeights(ctx, c, 1, 0); err != nil {
 					t.Errorf("restore weights: %v", err)
+					return
+				}
+				// Leave the overlay converged on provider-a so a subsequent
+				// attribution-sensitive test does not race this restore.
+				if err := waitOverlay(ctx, c, "a", 2*time.Minute); err != nil {
+					t.Errorf("restore did not converge on provider-a: %v", err)
 				}
 			}()
 
