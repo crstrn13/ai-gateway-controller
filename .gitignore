@@ -42,3 +42,7 @@ test/openshift-env/.state/
 # local build artifacts / editor scratch
 /manager
 /component-architecture.json
+
+# local co-development workspace (dockyard); not for CI/container builds
+go.work
+go.work.sum
