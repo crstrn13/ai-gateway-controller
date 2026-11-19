@@ -11,9 +11,9 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/config"
-	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/funcs"
-	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/gateway"
+	"github.com/praxis-proxy/dockyard"
+	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/gateway"
 )
 
 // TestLLMD exercises the self-hosted / llm-d path: istio routes straight to an
@@ -40,20 +40,20 @@ func TestLLMD(t *testing.T) {
 		features.NewWithDescription(t.Name(), "istio routes to an InferencePool; the EPP picks a vLLM pod (GIE).").
 			WithLabel(LabelArea, LabelAreaLLMD).
 			WithLabel(LabelSize, LabelSizeLarge).
-			WithLabel(config.LabelTestSuite, config.TestSuiteDefault).
-			WithSetup("EPP + InferencePool + members + GIE route applied and ready", funcs.AllOf(
-				funcs.ApplyResources("manifests/llmd", "*.yaml"),
+			WithLabel(dockyard.LabelTestSuite, dockyard.TestSuiteDefault).
+			WithSetup("EPP + InferencePool + members + GIE route applied and ready", feature.AllOf(
+				feature.ApplyResources("manifests/llmd", "*.yaml"),
 				// istio auto-provisions the ai-gateway-istio Deployment/Service for the
 				// Gateway in 05-gateway.yaml; wait for it so the LB IP is assigned before
-				// the Assess resolves it via funcs.GatewayClient.
-				funcs.DeploymentBecomesAvailableWithin(3*time.Minute, "istio-system", "ai-gateway-istio"),
-				funcs.DeploymentBecomesAvailableWithin(3*time.Minute, "llmd", "llmd-epp"),
-				funcs.DeploymentBecomesAvailableWithin(5*time.Minute, "llmd", "vcr-1"),
-				funcs.DeploymentBecomesAvailableWithin(5*time.Minute, "llmd", "vcr-2"),
+				// the Assess resolves it via feature.GatewayClient.
+				feature.DeploymentBecomesAvailableWithin(3*time.Minute, "istio-system", "ai-gateway-istio"),
+				feature.DeploymentBecomesAvailableWithin(3*time.Minute, "llmd", "llmd-epp"),
+				feature.DeploymentBecomesAvailableWithin(5*time.Minute, "llmd", "vcr-1"),
+				feature.DeploymentBecomesAvailableWithin(5*time.Minute, "llmd", "vcr-2"),
 			)).
 			Assess("a request routes through the InferencePool to a pool member (200)",
 				func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-					gw, err := funcs.GatewayClient(ctx, c, "ai-gateway", "istio-system")
+					gw, err := feature.GatewayClient(ctx, c, "ai-gateway", "istio-system")
 					if err != nil {
 						t.Fatalf("gateway client: %v", err)
 					}
@@ -67,7 +67,7 @@ func TestLLMD(t *testing.T) {
 					return ctx
 				},
 			).
-			WithTeardown("remove the llm-d stack", funcs.DeleteResources("manifests/llmd", "*.yaml")).
+			WithTeardown("remove the llm-d stack", feature.DeleteResources("manifests/llmd", "*.yaml")).
 			Feature(),
 	)
 }

@@ -1,11 +1,11 @@
 //go:build e2e
 
 // Package product is the AI Gateway's repo-specific half of the e2e harness: the
-// config.Product implementation (its control plane, dependency stack and CRD
+// dockyard.Vessel implementation (its control plane, dependency stack and CRD
 // types) plus the code fixtures its tests parameterize. The generic harness lives
-// in test/e2e/{config,funcs,gateway}; this package is what a second repo would
-// replace with its own. It is e2e-tagged because it imports controller-runtime
-// and the reconcilers.
+// in the dockyard module (dockyard/install/feature/gateway); this package is what a
+// second repo would replace with its own. It is e2e-tagged because it imports
+// controller-runtime and the reconcilers.
 package product
 
 import (
@@ -28,8 +28,8 @@ import (
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/inference/v1alpha1"
 	"github.com/opendatahub-io/ai-gateway-controller/pkg/controller"
 	"github.com/opendatahub-io/ai-gateway-controller/pkg/tenant"
-	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/config"
-	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/funcs"
+	"github.com/praxis-proxy/dockyard"
+	"github.com/praxis-proxy/dockyard/install"
 )
 
 // controllerCRDDirs are the CRDs the reconcilers watch, installed before the
@@ -58,7 +58,7 @@ const (
 // (test/e2e/sim/recorder), used by provider-selection and translation tests.
 const recorderImage = "ai-gateway-e2e/provider-recorder:dev"
 
-// AIGateway is the config.Product for this repo: it installs the AI Gateway
+// AIGateway is the dockyard.Vessel for this repo: it installs the AI Gateway
 // dependency stack, registers the inference/aigateway CRD types, and runs the
 // reconcilers in-process against the suite cluster.
 type AIGateway struct {
@@ -78,7 +78,7 @@ func NewAIGateway() *AIGateway {
 }
 
 // Compile-time assertion that AIGateway satisfies the Product seam.
-var _ config.Product = (*AIGateway)(nil)
+var _ dockyard.Vessel = (*AIGateway)(nil)
 
 // ExtProcImage is the ext-proc image to load and render (flag: -extproc-image).
 func (p *AIGateway) ExtProcImage() string { return *p.extProcImage }
@@ -89,16 +89,16 @@ func (p *AIGateway) ExtProcRepo() string { return *p.extProcRepo }
 // InstallDeps builds the AI Gateway dependency stack in order: cluster add-ons,
 // the GIE CRD (before istio, which needs it), istio, the ext-proc image, and the
 // shared sim backend the tests route to.
-func (p *AIGateway) InstallDeps(e *config.Environment) []env.Func {
-	return funcs.NewDeps().
-		WithMetalLB(funcs.MetalLBVersion(e.MetalLBVersion())).
-		WithGatewayAPI(funcs.GatewayAPIVersion(e.GatewayAPIVersion())).
+func (p *AIGateway) InstallDeps(e *dockyard.Environment) []env.Func {
+	return install.NewDeps().
+		WithMetalLB(install.MetalLBVersion(e.MetalLBVersion())).
+		WithGatewayAPI(install.GatewayAPIVersion(e.GatewayAPIVersion())).
 		WithCRDs("manifests/gie"). // GIE InferencePool CRD, before istio (GIE needs it)
-		WithIstio(funcs.IstioInferenceExtension(true)).
+		WithIstio(install.IstioInferenceExtension(true)).
 		// cert-manager stands in for OpenShift service-ca: it issues the ext-proc
 		// serving certs and a CA the gateway trusts (no kind overlay, no shim).
 		WithCertManager().
-		WithKubectlApply("manifests/cert-manager/issuer.yaml").
+		WithManifestFile("manifests/cert-manager/issuer.yaml").
 		WithCABundle("cert-manager", "e2e-ca", defaultGatewayNamespace, "e2e-service-ca").
 		// Kuadrant attaches the gateway WasmPlugin the ext-proc EnvoyFilters anchor to.
 		WithKuadrant().
@@ -113,15 +113,7 @@ func (p *AIGateway) InstallDeps(e *config.Environment) []env.Func {
 // client scheme, so typed Create/Get work for those kinds.
 func (p *AIGateway) AddTypesToScheme() env.Func {
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-		s := cfg.Client().Resources().GetScheme()
-		if err := inferencev1alpha1.AddToScheme(s); err != nil {
-			return ctx, err
-		}
-		if err := aigatewayv1alpha1.AddToScheme(s); err != nil {
-			return ctx, err
-		}
-		_ = clientgoscheme.AddToScheme(s)
-		return ctx, nil
+		return ctx, addTypesToScheme(cfg.Client().Resources().GetScheme())
 	}
 }
 
@@ -138,7 +130,7 @@ func (p *AIGateway) Install() (setup []env.Func, teardown env.Func) {
 		GatewayName:      defaultGatewayName,
 		GatewayNamespace: defaultGatewayNamespace,
 	}
-	return []env.Func{funcs.InstallCRDs(controllerCRDDirs...), cp.Setup}, cp.Teardown
+	return []env.Func{install.InstallCRDs(controllerCRDDirs...), cp.Setup}, cp.Teardown
 }
 
 // ControlPlane runs this repo's controllers in-process against the suite's cluster

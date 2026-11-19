@@ -20,19 +20,19 @@ import (
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/inference/v1alpha1"
 )
 
-// TestProviderTenantNotReady is the first genuinely meaningful e2e assertion:
-// it proves this repo's controller is really running and reconciling against a
-// real (kind) cluster. We create an ExternalProvider in a namespace that has no
-// MaaSTenantConfig; the controller must report status.phase=Pending with
-// reason=TenantNotReady, because it cannot resolve a tenant. No MaaS/Istio
-// operators are involved — only the CRDs and the controller.
-func TestProviderTenantNotReady(t *testing.T) {
+// TestProviderBecomesReady is the first genuinely meaningful e2e assertion: it
+// proves this repo's controller is really running and reconciling against a real
+// (kind) cluster. We create an ExternalProvider with a valid apikey credential
+// Secret; the controller validates it and must report status.phase=Ready with
+// reason=Validated. No MaaS/Istio operators are involved — only the CRDs and the
+// controller.
+func TestProviderBecomesReady(t *testing.T) {
 	const (
-		ns           = "e2e-no-tenant"
+		ns           = "e2e-provider"
 		providerName = "provider-a"
 	)
 
-	feature := features.New("ExternalProvider reports TenantNotReady without a tenant").
+	feature := features.New("ExternalProvider becomes Ready once its credential Secret exists").
 		Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			r := c.Client().Resources()
 			if err := inferencev1alpha1.AddToScheme(r.GetScheme()); err != nil {
@@ -40,6 +40,15 @@ func TestProviderTenantNotReady(t *testing.T) {
 			}
 			if err := r.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}); err != nil {
 				t.Fatalf("create namespace: %v", err)
+			}
+			// The credential Secret must exist with the fixed "api-key" key, else the
+			// controller reports ReconcileFailed (secret not found) instead of Ready.
+			credential := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "provider-a-key", Namespace: ns},
+				Data:       map[string][]byte{"api-key": []byte("test-key")},
+			}
+			if err := r.Create(ctx, credential); err != nil {
+				t.Fatalf("create credential secret: %v", err)
 			}
 			provider := &inferencev1alpha1.ExternalProvider{
 				ObjectMeta: metav1.ObjectMeta{Name: providerName, Namespace: ns},
@@ -57,7 +66,7 @@ func TestProviderTenantNotReady(t *testing.T) {
 			}
 			return ctx
 		}).
-		Assess("status becomes Pending / TenantNotReady", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		Assess("status becomes Ready / Validated", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			r := c.Client().Resources()
 			provider := &inferencev1alpha1.ExternalProvider{
 				ObjectMeta: metav1.ObjectMeta{Name: providerName, Namespace: ns},
@@ -65,17 +74,17 @@ func TestProviderTenantNotReady(t *testing.T) {
 			err := wait.For(
 				conditions.New(r).ResourceMatch(provider, func(obj k8s.Object) bool {
 					p, ok := obj.(*inferencev1alpha1.ExternalProvider)
-					if !ok || p.Status.Phase != "Pending" {
+					if !ok || p.Status.Phase != "Ready" {
 						return false
 					}
 					ready := meta.FindStatusCondition(p.Status.Conditions, "Ready")
-					return ready != nil && ready.Reason == "TenantNotReady"
+					return ready != nil && ready.Status == metav1.ConditionTrue && ready.Reason == "Validated"
 				}),
 				wait.WithTimeout(2*time.Minute),
 				wait.WithInterval(2*time.Second),
 			)
 			if err != nil {
-				t.Fatalf("provider never reached Pending/TenantNotReady (phase=%q conditions=%+v): %v",
+				t.Fatalf("provider never reached Ready/Validated (phase=%q conditions=%+v): %v",
 					provider.Status.Phase, provider.Status.Conditions, err)
 			}
 			ready := meta.FindStatusCondition(provider.Status.Conditions, "Ready")

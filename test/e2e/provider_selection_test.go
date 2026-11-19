@@ -13,10 +13,10 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/config"
-	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/funcs"
-	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/gateway"
 	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/product"
+	"github.com/praxis-proxy/dockyard"
+	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/gateway"
 )
 
 // TestProviderSelectionWeighted ports the core of kind-env's
@@ -50,8 +50,8 @@ func TestProviderSelectionWeighted(t *testing.T) {
 		features.NewWithDescription(t.Name(), "A 4:1 weighted two-provider model serves traffic in ~80/20 proportion.").
 			WithLabel(LabelArea, LabelAreaRouting).
 			WithLabel(LabelSize, LabelSizeLarge).
-			WithLabel(config.LabelTestSuite, config.TestSuiteDefault).
-			WithSetup("two provider backends + a weighted ExternalModel; controller provisions the ext-proc", funcs.AllOf(
+			WithLabel(dockyard.LabelTestSuite, dockyard.TestSuiteDefault).
+			WithSetup("two provider backends + a weighted ExternalModel; controller provisions the ext-proc", feature.AllOf(
 				product.ReadyTenant(ns),
 				product.ExtProcServingCerts(ns),
 				product.MountGatewayCATrust(),
@@ -59,9 +59,9 @@ func TestProviderSelectionWeighted(t *testing.T) {
 				// each self-identifying as prov-a / prov-b for attribution.
 				product.ProviderBackend("provider-a-sim", "llm", "prov-a"),
 				product.ProviderBackend("provider-b-sim", "llm", "prov-b"),
-				funcs.DeploymentBecomesAvailableWithin(3*time.Minute, "llm", "provider-a-sim"),
-				funcs.DeploymentBecomesAvailableWithin(3*time.Minute, "llm", "provider-b-sim"),
-				funcs.Create(
+				feature.DeploymentBecomesAvailableWithin(3*time.Minute, "llm", "provider-a-sim"),
+				feature.DeploymentBecomesAvailableWithin(3*time.Minute, "llm", "provider-b-sim"),
+				feature.Create(
 					product.ProviderSecret("prov-a", ns),
 					product.ProviderSecret("prov-b", ns),
 					product.ExternalProvider("prov-a", ns, backendA),
@@ -71,12 +71,12 @@ func TestProviderSelectionWeighted(t *testing.T) {
 						product.WeightedRef{Provider: "prov-b", TargetModel: "prov-b", Weight: weightB},
 					),
 				),
-				funcs.DeploymentBecomesAvailableWithin(5*time.Minute, ns, "payload-processing-external-model-"+ns),
-				funcs.DeploymentBecomesAvailableWithin(3*time.Minute, "istio-system", "ai-gateway-istio"),
+				feature.DeploymentBecomesAvailableWithin(5*time.Minute, ns, "payload-processing-external-model-"+ns),
+				feature.DeploymentBecomesAvailableWithin(3*time.Minute, "istio-system", "ai-gateway-istio"),
 			)).
 			Assess("sampled traffic matches the 80/20 split (chi-square, alpha=0.001)",
 				func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-					gw, err := funcs.GatewayClient(ctx, c, "ai-gateway", "istio-system")
+					gw, err := feature.GatewayClient(ctx, c, "ai-gateway", "istio-system")
 					if err != nil {
 						t.Fatalf("gateway client: %v", err)
 					}
@@ -130,8 +130,8 @@ func TestProviderSelectionWeighted(t *testing.T) {
 					return ctx
 				},
 			).
-			WithTeardown("remove the CRs and backends", funcs.AllOf(
-				funcs.Delete(
+			WithTeardown("remove the CRs and backends", feature.AllOf(
+				feature.Delete(
 					product.WeightedExternalModel(clientModel, ns, clientModel,
 						product.WeightedRef{Provider: "prov-a", TargetModel: "prov-a", Weight: weightA},
 						product.WeightedRef{Provider: "prov-b", TargetModel: "prov-b", Weight: weightB},
@@ -141,7 +141,7 @@ func TestProviderSelectionWeighted(t *testing.T) {
 					product.ProviderSecret("prov-a", ns),
 					product.ProviderSecret("prov-b", ns),
 				),
-				funcs.DeleteResources("manifests/provider-selection", "*.yaml"),
+				feature.DeleteResources("manifests/provider-selection", "*.yaml"),
 			)).
 			Feature(),
 	)
