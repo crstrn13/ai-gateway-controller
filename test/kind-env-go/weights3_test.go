@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -86,6 +87,58 @@ func TestThreeProviderWeights(t *testing.T) {
 						t.Errorf("%s: proof-%s received no traffic", tc.name, p)
 					}
 				}
+			}
+			return ctx
+		}).
+		Assess("an unready provider is withdrawn from the overlay while healthy siblings keep serving", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			// Equal weights across all three, converged.
+			if err := setProofWeights(ctx, c, [3]int{1, 1, 1}); err != nil {
+				t.Fatalf("set equal weights: %v", err)
+			}
+			if err := waitOverlayCandidates(ctx, c, []string{
+				"provider-provider-proof-a", "provider-provider-proof-b", "provider-provider-proof-c",
+			}, 3*time.Minute); err != nil {
+				t.Fatalf("three candidates did not converge: %v", err)
+			}
+
+			// Always restore proof-c's credential.
+			defer func() {
+				if err := ensureSecret(ctx, c, tenantNamespace, "provider-proof-c-credentials", "proof-key-provider-proof-c"); err != nil {
+					t.Errorf("restore proof-c credential: %v", err)
+				}
+			}()
+
+			// Remove proof-c's auth credential (key only; the Secret stays so its ext-proc
+			// projection does not wedge) → ExternalProvider goes unready → candidate withdrawn.
+			if err := clearSecretKey(ctx, c, tenantNamespace, "provider-proof-c-credentials", "api-key"); err != nil {
+				t.Fatalf("clear proof-c credential: %v", err)
+			}
+			if err := waitExternalProviderNotReady(ctx, c, "provider-proof-c", 3*time.Minute); err != nil {
+				t.Fatalf("proof-c did not go unready: %v", err)
+			}
+			if err := waitOverlayCandidates(ctx, c, []string{
+				"provider-provider-proof-a", "provider-provider-proof-b",
+			}, 3*time.Minute); err != nil {
+				t.Fatalf("overlay did not withdraw proof-c to two healthy candidates: %v", err)
+			}
+
+			// Traffic is served only by the healthy siblings; proof-c gets none.
+			apiFwd, _, key := translationClientSetup(ctx, t, c)
+			defer apiFwd.Close()
+			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			if err != nil {
+				t.Fatalf("port-forward gateway: %v", err)
+			}
+			defer gwFwd.Close()
+			authed := gateway.New(gwFwd.URL("http"), gateway.WithBearer(key), gateway.WithTimeout(30*time.Second))
+			_ = sampleProofSplit(ctx, authed, "/"+tenantNamespace+"/demo/v1/chat/completions", 40) // warm up
+			counts := sampleProofSplit(ctx, authed, "/"+tenantNamespace+"/demo/v1/chat/completions", 120)
+			t.Logf("unready-withdrawal counts=%v", counts)
+			if counts["c"] != 0 {
+				t.Errorf("withdrawn proof-c still served %d requests", counts["c"])
+			}
+			if counts["a"] == 0 || counts["b"] == 0 {
+				t.Errorf("healthy siblings did not both serve: %v", counts)
 			}
 			return ctx
 		}).
@@ -205,6 +258,36 @@ func teardownProofStack(ctx context.Context, t *testing.T, c *envconf.Config) {
 	// Credential secrets intentionally left (the controller does not prune their ext-proc
 	// projection — see the translation teardown note).
 	_ = waitDeploymentRolledOut(ctx, c, tenantNamespace, extDeployment, 2*time.Minute)
+}
+
+// clearSecretKey removes a single data key from a Secret (leaving the Secret in place so a
+// projected-volume mount referencing it does not break), via retry-on-conflict.
+func clearSecretKey(ctx context.Context, c *envconf.Config, namespace, name, key string) error {
+	r := c.Client().Resources()
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var s corev1.Secret
+		if err := r.Get(ctx, name, namespace, &s); err != nil {
+			return err
+		}
+		delete(s.Data, key)
+		delete(s.StringData, key)
+		return r.Update(ctx, &s)
+	})
+}
+
+// waitExternalProviderNotReady polls until an ExternalProvider's phase is not Ready.
+func waitExternalProviderNotReady(ctx context.Context, c *envconf.Config, name string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		var ep inferencev1alpha1.ExternalProvider
+		if err := c.Client().Resources().Get(ctx, name, tenantNamespace, &ep); err == nil && ep.Status.Phase != "Ready" {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("ExternalProvider %s stayed Ready", name)
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // setProofWeights rewires demo-model to the three proof providers with the given weights.
