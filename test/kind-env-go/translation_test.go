@@ -250,6 +250,70 @@ func TestAPITranslation(t *testing.T) {
 			}
 			return ctx
 		}).
+		Assess("routing to the OpenAI provider passes through (no translation) and serves", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			if err := setTranslationWeights(ctx, c, 1, 0); err != nil {
+				t.Fatalf("route to openai: %v", err)
+			}
+			if err := waitOverlayCandidates(ctx, c, []string{"provider-api-translation-openai"}, 3*time.Minute); err != nil {
+				t.Fatalf("openai-only did not converge: %v", err)
+			}
+			apiFwd, err := feature.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
+			if err != nil {
+				t.Fatalf("port-forward maas-api: %v", err)
+			}
+			defer apiFwd.Close()
+			caPEM, err := runOwnedCA(ctx, c)
+			if err != nil {
+				t.Fatalf("read run-owned CA: %v", err)
+			}
+			key, err := mintMaaSKey(ctx, apiFwd.Addr(), caPEM)
+			if err != nil {
+				t.Fatalf("mint MaaS key: %v", err)
+			}
+			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			if err != nil {
+				t.Fatalf("port-forward gateway: %v", err)
+			}
+			defer gwFwd.Close()
+			authed := gateway.New(gwFwd.URL("http"), gateway.WithBearer(key), gateway.WithTimeout(30*time.Second))
+			resp, err := retryRequestStatus(ctx, authed, "/"+tenantNamespace+"/demo/v1/chat/completions",
+				map[string]any{"model": "demo", "messages": []map[string]any{{"role": "user", "content": "Reply with the word blue."}}},
+				http.StatusOK, 2*time.Minute)
+			if err != nil {
+				t.Fatalf("openai passthrough request did not reach 200: %v", err)
+			}
+			if !strings.Contains(resp.String(), "\"choices\"") {
+				t.Errorf("openai passthrough response not OpenAI-shaped: %s", truncate(resp.String(), 300))
+			}
+			return ctx
+		}).
+		Assess("switching the active translation provider reconciles in place (no ext-proc restart)", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			before, err := extProcIdentity(ctx, c)
+			if err != nil {
+				t.Fatalf("ext-proc identity (before): %v", err)
+			}
+			// Flip openai → anthropic → openai; the data plane must reconcile, not restart.
+			if err := setTranslationWeights(ctx, c, 0, 1); err != nil {
+				t.Fatalf("switch to anthropic: %v", err)
+			}
+			if err := waitOverlayCandidates(ctx, c, []string{"provider-api-translation-anthropic"}, 3*time.Minute); err != nil {
+				t.Fatalf("anthropic switch did not converge: %v", err)
+			}
+			if err := setTranslationWeights(ctx, c, 1, 0); err != nil {
+				t.Fatalf("switch back to openai: %v", err)
+			}
+			if err := waitOverlayCandidates(ctx, c, []string{"provider-api-translation-openai"}, 3*time.Minute); err != nil {
+				t.Fatalf("openai switch did not converge: %v", err)
+			}
+			after, err := extProcIdentity(ctx, c)
+			if err != nil {
+				t.Fatalf("ext-proc identity (after): %v", err)
+			}
+			if after.uid != before.uid || after.restarts != 0 || before.restarts != 0 {
+				t.Errorf("ext-proc identity changed across translation switches: before=%+v after=%+v", before, after)
+			}
+			return ctx
+		}).
 		Feature()
 	testenv.Test(t, f)
 }
