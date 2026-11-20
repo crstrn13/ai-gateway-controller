@@ -4,8 +4,11 @@ package kindenv
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -314,8 +317,209 @@ func TestAPITranslation(t *testing.T) {
 			}
 			return ctx
 		}).
+		Assess("request translation is correct on the wire (token default, explicit tokens, image order, legacy drop, transport)", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			if err := setTranslationWeights(ctx, c, 0, 1); err != nil {
+				t.Fatalf("route to anthropic: %v", err)
+			}
+			if err := waitOverlayCandidates(ctx, c, []string{"provider-api-translation-anthropic"}, 3*time.Minute); err != nil {
+				t.Fatalf("anthropic-only did not converge: %v", err)
+			}
+			apiFwd, caPEM, key := translationClientSetup(ctx, t, c)
+			defer apiFwd.Close()
+			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			if err != nil {
+				t.Fatalf("port-forward gateway: %v", err)
+			}
+			defer gwFwd.Close()
+			authed := gateway.New(gwFwd.URL("http"), gateway.WithBearer(key), gateway.WithTimeout(30*time.Second))
+			demoPath := "/" + tenantNamespace + "/demo/v1/chat/completions"
+
+			// Each probe carries a unique diagnostic id so its upstream observation can be
+			// matched; the Anthropic provider records what the translator actually sent.
+			pngB64 := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+			probes := map[string]map[string]any{
+				"translation-default-tokens":  {"model": "demo", "messages": []map[string]any{{"role": "user", "content": "hello"}}},
+				"translation-explicit-tokens": {"model": "demo", "max_tokens": 256, "messages": []map[string]any{{"role": "user", "content": "hello"}}},
+				"translation-legacy-drop":     {"model": "demo", "n": 2, "seed": 17, "user": "u", "parallel_tool_calls": true, "messages": []map[string]any{{"role": "user", "content": "hello"}}},
+				"translation-image-order": {"model": "demo", "messages": []map[string]any{{"role": "user", "content": []map[string]any{
+					{"type": "text", "text": "describe"},
+					{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64," + pngB64}},
+				}}}},
+			}
+			for diag, body := range probes {
+				resp, err := authed.Post(ctx, demoPath, body, gateway.Header("x-ipp-diagnostic-id", diag))
+				if err != nil {
+					t.Fatalf("%s: request: %v", diag, err)
+				}
+				if resp.StatusCode != http.StatusOK {
+					t.Errorf("%s: status = %d, want 200", diag, resp.StatusCode)
+				}
+			}
+
+			obs, err := fetchTranslationObservations(ctx, t, c, caPEM)
+			if err != nil {
+				t.Fatalf("fetch observations: %v", err)
+			}
+			byDiag := map[string]recorderObservation{}
+			for _, o := range obs {
+				if o.DiagnosticID != "" {
+					byDiag[o.DiagnosticID] = o
+				}
+			}
+
+			// Token default: no client max_tokens → translator defaults to 4096.
+			if o, ok := byDiag["translation-default-tokens"]; !ok {
+				t.Error("no observation for translation-default-tokens")
+			} else {
+				if !o.AnthropicRequestOK {
+					t.Error("default-tokens: translated request not valid Anthropic Messages")
+				}
+				if o.AnthropicMaxTokens != 4096 {
+					t.Errorf("default-tokens: max_tokens = %d, want 4096", o.AnthropicMaxTokens)
+				}
+				if !o.CredentialOK || !o.SNI || !o.AuthorityOK {
+					t.Errorf("default-tokens: transport checks failed cred=%v sni=%v authority=%v", o.CredentialOK, o.SNI, o.AuthorityOK)
+				}
+			}
+			// Explicit max_tokens is preserved through translation.
+			if o, ok := byDiag["translation-explicit-tokens"]; ok && o.AnthropicMaxTokens != 256 {
+				t.Errorf("explicit-tokens: max_tokens = %d, want 256", o.AnthropicMaxTokens)
+			}
+			// Legacy OpenAI-only options are dropped from the Anthropic request.
+			if o, ok := byDiag["translation-legacy-drop"]; ok && !o.LegacyOptionsAbsent {
+				t.Error("legacy-drop: OpenAI-only options were not dropped from the translated request")
+			}
+			// Image content translates to an ordered [text, image] block list.
+			if o, ok := byDiag["translation-image-order"]; !ok {
+				t.Error("no observation for translation-image-order")
+			} else {
+				if len(o.AnthropicBlockTypes) < 2 || o.AnthropicBlockTypes[0] != "text" || o.AnthropicBlockTypes[1] != "image" {
+					t.Errorf("image-order: block types = %v, want [text image ...]", o.AnthropicBlockTypes)
+				}
+				if len(o.AnthropicImageSource) == 0 {
+					t.Error("image-order: no image source recorded")
+				}
+			}
+			return ctx
+		}).
+		Assess("translation error handling: provider error maps to OpenAI error, invalid provider JSON is a gateway error", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			// Anthropic provider still active from the matrix assessment.
+			apiFwd, _, key := translationClientSetup(ctx, t, c)
+			defer apiFwd.Close()
+			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			if err != nil {
+				t.Fatalf("port-forward gateway: %v", err)
+			}
+			defer gwFwd.Close()
+			authed := gateway.New(gwFwd.URL("http"), gateway.WithBearer(key), gateway.WithTimeout(30*time.Second))
+			demoPath := "/" + tenantNamespace + "/demo/v1/chat/completions"
+
+			// A provider-side error (Anthropic error JSON) is surfaced to the client as an
+			// OpenAI-shaped error, not raw Anthropic, and not 200.
+			perr, err := authed.Post(ctx, demoPath, map[string]any{"model": "demo",
+				"messages": []map[string]any{{"role": "user", "content": "provider-error please"}}})
+			if err != nil {
+				t.Fatalf("provider-error request: %v", err)
+			}
+			if perr.StatusCode == http.StatusOK {
+				t.Errorf("provider error returned 200, want an error status")
+			}
+			if !strings.Contains(perr.String(), "\"error\"") {
+				t.Errorf("provider error body not OpenAI error-shaped: %s", truncate(perr.String(), 300))
+			}
+
+			// Invalid JSON from the provider surfaces as a gateway error (non-200).
+			ierr, err := authed.Post(ctx, demoPath, map[string]any{"model": "demo",
+				"messages": []map[string]any{{"role": "user", "content": "externalmodel-anthropic-invalid-json-response"}}})
+			if err != nil {
+				t.Fatalf("invalid-json request: %v", err)
+			}
+			if ierr.StatusCode == http.StatusOK {
+				t.Errorf("invalid provider JSON returned 200, want a gateway error")
+			}
+			return ctx
+		}).
 		Feature()
 	testenv.Test(t, f)
+}
+
+// translationClientSetup port-forwards the maas-api, reads the run CA, and mints a key,
+// returning the open forward (caller closes), the CA PEM, and the bearer key.
+func translationClientSetup(ctx context.Context, t *testing.T, c *envconf.Config) (*feature.ForwardedPort, []byte, string) {
+	t.Helper()
+	apiFwd, err := feature.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
+	if err != nil {
+		t.Fatalf("port-forward maas-api: %v", err)
+	}
+	caPEM, err := runOwnedCA(ctx, c)
+	if err != nil {
+		apiFwd.Close()
+		t.Fatalf("read run-owned CA: %v", err)
+	}
+	key, err := mintMaaSKey(ctx, apiFwd.Addr(), caPEM)
+	if err != nil {
+		apiFwd.Close()
+		t.Fatalf("mint MaaS key: %v", err)
+	}
+	return apiFwd, caPEM, key
+}
+
+// recorderObservation is the subset of the provider-aware recorder's per-request record
+// that proves translation correctness on the wire.
+type recorderObservation struct {
+	DiagnosticID         string   `json:"diagnostic_id"`
+	Provider             string   `json:"provider"`
+	Path                 string   `json:"path"`
+	CredentialOK         bool     `json:"credential_ok"`
+	SNI                  bool     `json:"sni_ok"`
+	AuthorityOK          bool     `json:"authority_ok"`
+	AnthropicRequestOK   bool     `json:"anthropic_request_ok"`
+	AnthropicMaxTokens   int      `json:"anthropic_max_tokens"`
+	AnthropicBlockTypes  []string `json:"anthropic_block_types"`
+	AnthropicImageSource []string `json:"anthropic_image_source_types"`
+	LegacyOptionsAbsent  bool     `json:"legacy_options_absent"`
+}
+
+// fetchTranslationObservations reads the provider-aware recorder's NDJSON observation log
+// over HTTPS (run-CA-verified, SNI pinned to the recorder's cluster DNS).
+func fetchTranslationObservations(ctx context.Context, t *testing.T, c *envconf.Config, caPEM []byte) ([]recorderObservation, error) {
+	t.Helper()
+	fwd, err := feature.PortForwardService(ctx, c, apiNamespace, "provider-translation-ext", 8443)
+	if err != nil {
+		return nil, err
+	}
+	defer fwd.Close()
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("invalid CA PEM")
+	}
+	client := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "provider-translation-ext.maas-system.svc.cluster.local"},
+	}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+fwd.Addr()+"/__test/observations", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var out []recorderObservation
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var o recorderObservation
+		if err := json.Unmarshal([]byte(line), &o); err == nil {
+			out = append(out, o)
+		}
+	}
+	return out, nil
 }
 
 // --- provisioning ---
