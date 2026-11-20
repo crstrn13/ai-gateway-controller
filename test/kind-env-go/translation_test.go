@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,6 +153,49 @@ func TestAPITranslation(t *testing.T) {
 			if resp.StatusCode != http.StatusOK {
 				t.Errorf("translated request status = %d, want 200", resp.StatusCode)
 			}
+			// The Anthropic provider's response is translated back to an OpenAI
+			// chat-completion shape for the client.
+			body := resp.String()
+			t.Logf("translated response body (first 400): %s", truncate(body, 400))
+			if !strings.Contains(body, "\"choices\"") {
+				t.Errorf("response not translated to OpenAI shape (no \"choices\"): %s", truncate(body, 300))
+			}
+			return ctx
+		}).
+		Assess("a request over the translator input limit is rejected with 413", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			// Still routed to the Anthropic translation provider from the prior assessment.
+			apiFwd, err := feature.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
+			if err != nil {
+				t.Fatalf("port-forward maas-api: %v", err)
+			}
+			defer apiFwd.Close()
+			caPEM, err := runOwnedCA(ctx, c)
+			if err != nil {
+				t.Fatalf("read run-owned CA: %v", err)
+			}
+			key, err := mintMaaSKey(ctx, apiFwd.Addr(), caPEM)
+			if err != nil {
+				t.Fatalf("mint MaaS key: %v", err)
+			}
+			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			if err != nil {
+				t.Fatalf("port-forward gateway: %v", err)
+			}
+			defer gwFwd.Close()
+			authed := gateway.New(gwFwd.URL("http"), gateway.WithBearer(key), gateway.WithTimeout(60*time.Second))
+
+			// Build an ~11 MiB request body, over the 10 MiB translator input limit.
+			big, err := contract.ChatRequestWithExactJSONSize(11*1024*1024, contract.ExactSizeOptions{})
+			if err != nil {
+				t.Fatalf("build oversized body: %v", err)
+			}
+			resp, err := authed.Post(ctx, "/"+tenantNamespace+"/demo/v1/chat/completions", big)
+			if err != nil {
+				t.Fatalf("oversized request: %v", err)
+			}
+			if resp.StatusCode != http.StatusRequestEntityTooLarge {
+				t.Errorf("oversized request status = %d, want 413", resp.StatusCode)
+			}
 			return ctx
 		}).
 		Feature()
@@ -168,14 +212,19 @@ func provisionTranslationStack(ctx context.Context, t *testing.T, c *envconf.Con
 
 	// Backend + provider-auth credential secrets (same token both sides).
 	for _, p := range translationProviders {
-		short := p.provider // openai/anthropic/bedrock-openai → suffix below
-		token := "translation-test-key-" + short
+		token := "translation-test-key-" + p.provider
 		if err := ensureSecret(ctx, c, tenantNamespace, p.secret, token); err != nil {
 			return err
 		}
 		if err := ensureSecret(ctx, c, apiNamespace, backendSecretName(p.secret), token); err != nil {
 			return err
 		}
+	}
+	// The provider-aware backend manifest always mounts all three backend-credential
+	// secrets (openai/anthropic/bedrock), so the bedrock one must exist even though we
+	// only wire the openai + anthropic providers.
+	if err := ensureSecret(ctx, c, apiNamespace, "api-translation-bedrock-backend-credential", "translation-test-key-bedrock"); err != nil {
+		return err
 	}
 
 	// Provider-aware recorder backend (Deployment + 3 Services).
@@ -221,14 +270,20 @@ func teardownTranslationStack(ctx context.Context, t *testing.T, c *envconf.Conf
 	_ = setTenantTranslation(ctx, c, false)
 	for _, p := range translationProviders {
 		deleteExternalProvider(ctx, c, p.name)
-		_ = deleteSecret(ctx, c, tenantNamespace, p.secret)
-		_ = deleteSecret(ctx, c, apiNamespace, backendSecretName(p.secret))
 	}
+	// NOTE: the provider-auth credential secrets are intentionally NOT deleted. The
+	// controller adds their projection to the ext-proc Deployment when translation refs
+	// are bound but never prunes it once the model returns to the baseline — so deleting
+	// the secrets would wedge the next ext-proc rollout on a missing mount. They are tiny
+	// dummy secrets; leaving them keeps the data plane healthy and re-provisioning is
+	// idempotent (ensureSecret tolerates AlreadyExists).
 	// Delete the backend Deployment + Services.
 	_ = c.Client().Resources().Delete(ctx, deploymentObj(apiNamespace, translationBackendDeploy))
 	for _, svc := range []string{"provider-translation-ext", "provider-translation-openai-ext", "provider-translation-bedrock-ext"} {
 		_ = c.Client().Resources().Delete(ctx, serviceObj(apiNamespace, svc))
 	}
+	// Ensure the ext-proc is on a single healthy pod before the next test runs.
+	_ = waitDeploymentRolledOut(ctx, c, tenantNamespace, extDeployment, 2*time.Minute)
 }
 
 func backendSecretName(providerSecret string) string {
