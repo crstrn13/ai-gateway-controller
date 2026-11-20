@@ -101,11 +101,15 @@ func TestThreeProviderWeights(t *testing.T) {
 				t.Fatalf("three candidates did not converge: %v", err)
 			}
 
-			// Always restore proof-c's credential.
+			// Always restore proof-c's credential (upsert the key — the Secret still exists,
+			// so a create-only ensureSecret would not re-add the cleared key).
 			defer func() {
-				if err := ensureSecret(ctx, c, tenantNamespace, "provider-proof-c-credentials", "proof-key-provider-proof-c"); err != nil {
+				if err := setSecretKey(ctx, c, tenantNamespace, "provider-proof-c-credentials", "api-key", "proof-key-provider-proof-c"); err != nil {
 					t.Errorf("restore proof-c credential: %v", err)
+					return
 				}
+				// Let the ext-proc roll back onto a pod that can mount the restored key.
+				_ = waitDeploymentRolledOut(ctx, c, tenantNamespace, extDeployment, 2*time.Minute)
 			}()
 
 			// Remove proof-c's auth credential (key only; the Secret stays so its ext-proc
@@ -271,6 +275,22 @@ func clearSecretKey(ctx context.Context, c *envconf.Config, namespace, name, key
 		}
 		delete(s.Data, key)
 		delete(s.StringData, key)
+		return r.Update(ctx, &s)
+	})
+}
+
+// setSecretKey upserts a single data key on an existing Secret (retry-on-conflict).
+func setSecretKey(ctx context.Context, c *envconf.Config, namespace, name, key, value string) error {
+	r := c.Client().Resources()
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var s corev1.Secret
+		if err := r.Get(ctx, name, namespace, &s); err != nil {
+			return err
+		}
+		if s.StringData == nil {
+			s.StringData = map[string]string{}
+		}
+		s.StringData[key] = value
 		return r.Update(ctx, &s)
 	})
 }

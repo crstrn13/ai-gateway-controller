@@ -439,6 +439,86 @@ func TestAPITranslation(t *testing.T) {
 			}
 			return ctx
 		}).
+		Assess("with both providers active, requests route per-selection (openai passthrough and anthropic translation)", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			if err := setTranslationWeights(ctx, c, 1, 1); err != nil {
+				t.Fatalf("set equal weights: %v", err)
+			}
+			if err := waitOverlayCandidates(ctx, c, []string{
+				"provider-api-translation-openai", "provider-api-translation-anthropic",
+			}, 3*time.Minute); err != nil {
+				t.Fatalf("both candidates did not converge: %v", err)
+			}
+			apiFwd, caPEM, key := translationClientSetup(ctx, t, c)
+			defer apiFwd.Close()
+			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			if err != nil {
+				t.Fatalf("port-forward gateway: %v", err)
+			}
+			defer gwFwd.Close()
+			authed := gateway.New(gwFwd.URL("http"), gateway.WithBearer(key), gateway.WithTimeout(30*time.Second))
+			demoPath := "/" + tenantNamespace + "/demo/v1/chat/completions"
+
+			// Send a batch tagged with a shared diagnostic prefix so we can find them.
+			for i := 0; i < 24; i++ {
+				resp, err := authed.Post(ctx, demoPath,
+					map[string]any{"model": "demo", "messages": []map[string]any{{"role": "user", "content": "mixed"}}},
+					gateway.Header("x-ipp-diagnostic-id", fmt.Sprintf("mixed-sel-%d", i)))
+				if err == nil && resp.StatusCode != http.StatusOK {
+					t.Errorf("mixed-selection request %d: status %d", i, resp.StatusCode)
+				}
+			}
+			obs, err := fetchTranslationObservations(ctx, t, c, caPEM)
+			if err != nil {
+				t.Fatalf("fetch observations: %v", err)
+			}
+			sawChat, sawMessages := false, false
+			for _, o := range obs {
+				if !strings.HasPrefix(o.DiagnosticID, "mixed-sel-") {
+					continue
+				}
+				switch o.Path {
+				case "/v1/chat/completions":
+					sawChat = true // openai provider — passthrough
+				case "/v1/messages":
+					sawMessages = true // anthropic provider — translated
+				}
+			}
+			if !sawChat || !sawMessages {
+				t.Errorf("mixed selection did not exercise both paths: openai(chat)=%v anthropic(messages)=%v", sawChat, sawMessages)
+			}
+			return ctx
+		}).
+		Assess("a request just under the translator input limit is accepted", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			// Route to the openai provider (simple passthrough) for a clean size check.
+			if err := setTranslationWeights(ctx, c, 1, 0); err != nil {
+				t.Fatalf("route to openai: %v", err)
+			}
+			if err := waitOverlayCandidates(ctx, c, []string{"provider-api-translation-openai"}, 3*time.Minute); err != nil {
+				t.Fatalf("openai-only did not converge: %v", err)
+			}
+			apiFwd, _, key := translationClientSetup(ctx, t, c)
+			defer apiFwd.Close()
+			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			if err != nil {
+				t.Fatalf("port-forward gateway: %v", err)
+			}
+			defer gwFwd.Close()
+			authed := gateway.New(gwFwd.URL("http"), gateway.WithBearer(key), gateway.WithTimeout(60*time.Second))
+
+			// ~9 MiB body, comfortably under the 10 MiB limit → must be accepted.
+			ok, err := contract.ChatRequestWithExactJSONSize(9*1024*1024, contract.ExactSizeOptions{})
+			if err != nil {
+				t.Fatalf("build under-limit body: %v", err)
+			}
+			resp, err := retryRequestStatus(ctx, authed, "/"+tenantNamespace+"/demo/v1/chat/completions", ok, http.StatusOK, 2*time.Minute)
+			if err != nil {
+				t.Fatalf("under-limit request did not reach 200: %v", err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("under-limit (9 MiB) request status = %d, want 200", resp.StatusCode)
+			}
+			return ctx
+		}).
 		Feature()
 	testenv.Test(t, f)
 }
