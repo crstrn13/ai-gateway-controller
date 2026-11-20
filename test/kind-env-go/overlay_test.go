@@ -217,28 +217,24 @@ func lastRevisions(logs string) (accepted, serving string) {
 // waitOverlay polls until the overlay is converged on wanted and stays so for two
 // consecutive samples (the stability gate from wait_overlay).
 func waitOverlay(ctx context.Context, c *envconf.Config, wanted string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
 	stable := 0
 	var last overlayState
-	for {
+	return funcs.Retry(ctx, timeout, 2*time.Second, fmt.Sprintf("overlay converged on %q", wanted), func(ctx context.Context) error {
 		st, err := readOverlayState(ctx, c)
 		if err != nil {
 			return err
 		}
 		if st.converged(wanted) && st == last {
 			stable++
-			if stable >= 2 {
-				return nil
-			}
 		} else {
 			stable = 0
 		}
 		last = st
-		if time.Now().After(deadline) {
-			return fmt.Errorf("overlay not converged on %q: %+v", wanted, st)
+		if stable >= 2 {
+			return nil
 		}
-		time.Sleep(2 * time.Second)
-	}
+		return fmt.Errorf("not yet 2 stable samples: %+v", st)
+	})
 }
 
 // overlayIdentity is a content fingerprint of the routing-overlay ConfigMap (generation,

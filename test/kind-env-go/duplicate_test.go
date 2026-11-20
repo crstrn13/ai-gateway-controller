@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/inference/v1alpha1"
+	"github.com/praxis-proxy/dockyard/funcs"
 )
 
 // Stage 2 (increment 5): the duplicate active-provider binding assertions ported from
@@ -70,8 +71,7 @@ func TestDuplicateProviderBinding(t *testing.T) {
 
 // waitModelPhase polls the ExternalModel's status.phase until it equals wanted.
 func waitModelPhase(ctx context.Context, c *envconf.Config, wanted string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
+	return funcs.Retry(ctx, timeout, 2*time.Second, "model phase "+wanted, func(ctx context.Context) error {
 		var em inferencev1alpha1.ExternalModel
 		if err := c.Client().Resources().Get(ctx, externalModelName, tenantNamespace, &em); err != nil {
 			return err
@@ -79,11 +79,8 @@ func waitModelPhase(ctx context.Context, c *envconf.Config, wanted string, timeo
 		if em.Status.Phase == wanted {
 			return nil
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("model phase = %q, want %q", em.Status.Phase, wanted)
-		}
-		time.Sleep(2 * time.Second)
-	}
+		return fmt.Errorf("phase = %q, want %q", em.Status.Phase, wanted)
+	})
 }
 
 // addDuplicateProviderRef appends a copy of the first provider ref with weight 1, so the

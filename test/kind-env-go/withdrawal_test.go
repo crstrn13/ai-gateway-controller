@@ -111,8 +111,7 @@ func modelRouteName(ctx context.Context, c *envconf.Config) (string, error) {
 // waitModelWithdrawn polls until the model is Failed with a Ready=False/NoRoutes condition
 // at its observed generation and its HTTPRoute is gone.
 func waitModelWithdrawn(ctx context.Context, c *envconf.Config, routeName string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
+	return funcs.Retry(ctx, timeout, 2*time.Second, "model withdrawn", func(ctx context.Context) error {
 		var em inferencev1alpha1.ExternalModel
 		if err := c.Client().Resources().Get(ctx, externalModelName, tenantNamespace, &em); err != nil {
 			return err
@@ -130,12 +129,9 @@ func waitModelWithdrawn(ctx context.Context, c *envconf.Config, routeName string
 		if em.Status.Phase == "Failed" && noRoutes && em.Generation == em.Status.ObservedGeneration && routeGone {
 			return nil
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("not withdrawn: phase=%q noRoutes=%v routeGone=%v gen=%d observed=%d",
-				em.Status.Phase, noRoutes, routeGone, em.Generation, em.Status.ObservedGeneration)
-		}
-		time.Sleep(2 * time.Second)
-	}
+		return fmt.Errorf("phase=%q noRoutes=%v routeGone=%v gen=%d observed=%d",
+			em.Status.Phase, noRoutes, routeGone, em.Generation, em.Status.ObservedGeneration)
+	})
 }
 
 // httpRouteAbsent reports whether the named HTTPRoute no longer exists.

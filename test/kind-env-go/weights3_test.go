@@ -296,17 +296,16 @@ func setSecretKey(ctx context.Context, c *envconf.Config, namespace, name, key, 
 
 // waitExternalProviderNotReady polls until an ExternalProvider's phase is not Ready.
 func waitExternalProviderNotReady(ctx context.Context, c *envconf.Config, name string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
+	return funcs.Retry(ctx, timeout, 2*time.Second, "ExternalProvider "+name+" not Ready", func(ctx context.Context) error {
 		var ep inferencev1alpha1.ExternalProvider
-		if err := c.Client().Resources().Get(ctx, name, tenantNamespace, &ep); err == nil && ep.Status.Phase != "Ready" {
-			return nil
+		if err := c.Client().Resources().Get(ctx, name, tenantNamespace, &ep); err != nil {
+			return err
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("ExternalProvider %s stayed Ready", name)
+		if ep.Status.Phase == "Ready" {
+			return fmt.Errorf("still Ready")
 		}
-		time.Sleep(2 * time.Second)
-	}
+		return nil
+	})
 }
 
 // setProofWeights rewires demo-model to the three proof providers with the given weights.

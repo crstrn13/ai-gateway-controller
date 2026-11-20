@@ -172,8 +172,7 @@ func setProviderConfig(ctx context.Context, c *envconf.Config, config map[string
 
 // waitProviderPhase polls the ExternalProvider status.phase until it equals wanted.
 func waitProviderPhase(ctx context.Context, c *envconf.Config, wanted string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
+	return funcs.Retry(ctx, timeout, 2*time.Second, "provider phase "+wanted, func(ctx context.Context) error {
 		var ep inferencev1alpha1.ExternalProvider
 		if err := c.Client().Resources().Get(ctx, externalProviderName, tenantNamespace, &ep); err != nil {
 			return err
@@ -181,11 +180,8 @@ func waitProviderPhase(ctx context.Context, c *envconf.Config, wanted string, ti
 		if ep.Status.Phase == wanted {
 			return nil
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("provider phase = %q, want %q", ep.Status.Phase, wanted)
-		}
-		time.Sleep(2 * time.Second)
-	}
+		return fmt.Errorf("phase = %q, want %q", ep.Status.Phase, wanted)
+	})
 }
 
 // providerReadyMessage returns the message of the ExternalProvider's Ready condition.
@@ -241,40 +237,32 @@ func destinationRuleTLS(ctx context.Context, c *envconf.Config) (map[string]any,
 
 // retryRequestStatus retries the gateway request until it returns wantStatus or timeout.
 func retryRequestStatus(ctx context.Context, client *gateway.Client, path string, payload any, wantStatus int, timeout time.Duration) (*gateway.Response, error) {
-	deadline := time.Now().Add(timeout)
 	var last *gateway.Response
-	for {
+	err := funcs.Retry(ctx, timeout, 2*time.Second, fmt.Sprintf("status %d", wantStatus), func(ctx context.Context) error {
 		resp, err := client.Post(ctx, path, payload)
-		if err == nil {
-			last = resp
-			if resp.StatusCode == wantStatus {
-				return resp, nil
-			}
+		if err != nil {
+			return err
 		}
-		if time.Now().After(deadline) {
-			code := -1
-			if last != nil {
-				code = last.StatusCode
-			}
-			return last, fmt.Errorf("status never reached %d (last %d)", wantStatus, code)
+		last = resp
+		if resp.StatusCode == wantStatus {
+			return nil
 		}
-		time.Sleep(2 * time.Second)
-	}
+		return fmt.Errorf("status = %d", resp.StatusCode)
+	})
+	return last, err
 }
 
 // waitRequestCertVerifyFailed retries until the gateway returns 503 with a TLS
 // certificate-verification failure in the body.
 func waitRequestCertVerifyFailed(ctx context.Context, client *gateway.Client, path string, payload any, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
+	return funcs.Retry(ctx, timeout, 2*time.Second, "503 CERTIFICATE_VERIFY_FAILED", func(ctx context.Context) error {
 		resp, err := client.Post(ctx, path, payload)
-		if err == nil && resp.StatusCode == http.StatusServiceUnavailable &&
-			strings.Contains(resp.String(), "CERTIFICATE_VERIFY_FAILED") {
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode == http.StatusServiceUnavailable && strings.Contains(resp.String(), "CERTIFICATE_VERIFY_FAILED") {
 			return nil
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("never saw 503 CERTIFICATE_VERIFY_FAILED")
-		}
-		time.Sleep(2 * time.Second)
-	}
+		return fmt.Errorf("status %d without cert-verify failure", resp.StatusCode)
+	})
 }

@@ -741,17 +741,15 @@ func deleteExternalProvider(ctx context.Context, c *envconf.Config, name string)
 }
 
 func waitExternalProviderReady(ctx context.Context, c *envconf.Config, name string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
+	return funcs.Retry(ctx, timeout, 2*time.Second, "ExternalProvider "+name+" Ready", func(ctx context.Context) error {
 		var ep inferencev1alpha1.ExternalProvider
-		if err := c.Client().Resources().Get(ctx, name, tenantNamespace, &ep); err == nil && ep.Status.Phase == "Ready" {
-			return nil
+		if err := c.Client().Resources().Get(ctx, name, tenantNamespace, &ep); err != nil {
+			return err
+		} else if ep.Status.Phase != "Ready" {
+			return fmt.Errorf("phase = %q", ep.Status.Phase)
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("ExternalProvider %s not Ready", name)
-		}
-		time.Sleep(2 * time.Second)
-	}
+		return nil
+	})
 }
 
 func setTenantTranslation(ctx context.Context, c *envconf.Config, enabled bool) error {
@@ -844,14 +842,16 @@ func overlayProfiles(ctx context.Context, c *envconf.Config) (map[string][2]stri
 // waitOverlayCandidates waits until the mounted overlay's candidate clusters exactly match
 // want (converged + stable).
 func waitOverlayCandidates(ctx context.Context, c *envconf.Config, want []string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
 	wantSet := map[string]bool{}
 	for _, w := range want {
 		wantSet[w] = true
 	}
-	for {
+	return funcs.Retry(ctx, timeout, 2*time.Second, fmt.Sprintf("overlay candidates %v", want), func(ctx context.Context) error {
 		profiles, err := overlayProfiles(ctx, c)
-		if err == nil && len(profiles) == len(wantSet) {
+		if err != nil {
+			return err
+		}
+		if len(profiles) == len(wantSet) {
 			ok := true
 			for cluster := range profiles {
 				if !wantSet[cluster] {
@@ -863,11 +863,12 @@ func waitOverlayCandidates(ctx context.Context, c *envconf.Config, want []string
 				return nil
 			}
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("overlay candidates did not converge to %v (have %v)", want, keysOf(ctx, c))
+		have := make([]string, 0, len(profiles))
+		for cluster := range profiles {
+			have = append(have, cluster)
 		}
-		time.Sleep(2 * time.Second)
-	}
+		return fmt.Errorf("have %v", have)
+	})
 }
 
 func keysOf(ctx context.Context, c *envconf.Config) []string {
@@ -882,8 +883,7 @@ func keysOf(ctx context.Context, c *envconf.Config) []string {
 // waitDeploymentRolledOut blocks until a Deployment has fully rolled onto its current
 // template (controller observed the latest generation and every replica is updated+ready).
 func waitDeploymentRolledOut(ctx context.Context, c *envconf.Config, namespace, name string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
+	return funcs.Retry(ctx, timeout, 2*time.Second, "deployment "+namespace+"/"+name+" rolled out", func(ctx context.Context) error {
 		var dep appsv1.Deployment
 		if err := c.Client().Resources().Get(ctx, name, namespace, &dep); err != nil {
 			return err
@@ -898,12 +898,9 @@ func waitDeploymentRolledOut(ctx context.Context, c *envconf.Config, namespace, 
 			st.Replicas == want && st.AvailableReplicas == want {
 			return nil
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("deployment %s/%s not rolled out: gen=%d observed=%d updated=%d ready=%d replicas=%d want=%d",
-				namespace, name, dep.Generation, st.ObservedGeneration, st.UpdatedReplicas, st.ReadyReplicas, st.Replicas, want)
-		}
-		time.Sleep(2 * time.Second)
-	}
+		return fmt.Errorf("gen=%d observed=%d updated=%d ready=%d replicas=%d want=%d",
+			dep.Generation, st.ObservedGeneration, st.UpdatedReplicas, st.ReadyReplicas, st.Replicas, want)
+	})
 }
 
 func deploymentObj(ns, name string) *unstructured.Unstructured {

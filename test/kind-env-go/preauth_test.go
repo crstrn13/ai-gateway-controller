@@ -122,8 +122,7 @@ func scaleDeployment(ctx context.Context, c *envconf.Config, namespace, name str
 
 // waitDeploymentReplicas polls until a Deployment's readyReplicas equals wanted.
 func waitDeploymentReplicas(ctx context.Context, c *envconf.Config, namespace, name string, wanted int32, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
+	return funcs.Retry(ctx, timeout, time.Second, fmt.Sprintf("deployment %s/%s readyReplicas=%d", namespace, name, wanted), func(ctx context.Context) error {
 		var dep appsv1.Deployment
 		if err := c.Client().Resources().Get(ctx, name, namespace, &dep); err != nil {
 			return err
@@ -131,11 +130,8 @@ func waitDeploymentReplicas(ctx context.Context, c *envconf.Config, namespace, n
 		if dep.Status.ReadyReplicas == wanted {
 			return nil
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("deployment %s/%s readyReplicas=%d, want %d", namespace, name, dep.Status.ReadyReplicas, wanted)
-		}
-		time.Sleep(time.Second)
-	}
+		return fmt.Errorf("readyReplicas=%d", dep.Status.ReadyReplicas)
+	})
 }
 
 // providerRequestCount counts inference requests the katan-a backend has logged, used to

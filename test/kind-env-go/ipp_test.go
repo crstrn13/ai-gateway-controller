@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/praxis-proxy/dockyard/funcs"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/util/retry"
@@ -122,8 +123,7 @@ func setMTCType(ctx context.Context, c *envconf.Config, value string) error {
 // wantStatus (ignored when empty), and (when wantReady) its Ready condition is True. The
 // optional onStatus callback observes each status value seen (e.g. to catch a transient).
 func waitMTC(ctx context.Context, c *envconf.Config, wantType, wantStatus string, wantReady bool, timeout time.Duration, onStatus func(string)) error {
-	deadline := time.Now().Add(timeout)
-	for {
+	return funcs.Retry(ctx, timeout, 2*time.Second, "MaasTenantConfig convergence", func(ctx context.Context) error {
 		mtc, err := transitionTenantConfig(ctx, c)
 		if err != nil {
 			return err
@@ -138,12 +138,9 @@ func waitMTC(ctx context.Context, c *envconf.Config, wantType, wantStatus string
 		if typ == wantType && (wantStatus == "" || status == wantStatus) && (!wantReady || ready) {
 			return nil
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("MaasTenantConfig not converged: type=%q status=%q ready=%v (want type=%q status=%q ready=%v)",
-				typ, status, ready, wantType, wantStatus, wantReady)
-		}
-		time.Sleep(2 * time.Second)
-	}
+		return fmt.Errorf("type=%q status=%q ready=%v (want type=%q status=%q ready=%v)",
+			typ, status, ready, wantType, wantStatus, wantReady)
+	})
 }
 
 // mtcReady reports whether the MaasTenantConfig's Ready condition is True.

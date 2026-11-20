@@ -143,25 +143,24 @@ func lastKnownGoodState(ctx context.Context, c *envconf.Config) (st overlayState
 // waitLastKnownGood polls until the mounted/accepted/serving digests all equal
 // expectedDigest with the wanted provider active, stable for two samples.
 func waitLastKnownGood(ctx context.Context, c *envconf.Config, wanted, expectedDigest string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
 	stable := 0
 	var last overlayState
-	for {
+	return funcs.Retry(ctx, timeout, 2*time.Second, fmt.Sprintf("last-known-good %q@%s", wanted, expectedDigest), func(ctx context.Context) error {
 		st, err := lastKnownGoodState(ctx, c)
-		if err == nil && held(st, wanted, expectedDigest) && st == last {
+		if err != nil {
+			return err
+		}
+		if held(st, wanted, expectedDigest) && st == last {
 			stable++
-			if stable >= 2 {
-				return nil
-			}
 		} else {
 			stable = 0
 		}
 		last = st
-		if time.Now().After(deadline) {
-			return fmt.Errorf("last-known-good not held for %q@%s: %+v", wanted, expectedDigest, last)
+		if stable >= 2 {
+			return nil
 		}
-		time.Sleep(2 * time.Second)
-	}
+		return fmt.Errorf("not yet 2 stable samples: %+v", st)
+	})
 }
 
 func held(st overlayState, wanted, expectedDigest string) bool {

@@ -4,6 +4,7 @@ package kindenv
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -163,25 +164,24 @@ func classifyKatan(body string) string {
 // mounted, accepted, serving) for two consecutive samples, regardless of which providers
 // are active — the convergence gate for a multi-active weight split.
 func waitOverlayStable(ctx context.Context, c *envconf.Config, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
 	stable := 0
 	var last overlayState
-	for {
+	return funcs.Retry(ctx, timeout, 2*time.Second, "overlay digests stable", func(ctx context.Context) error {
 		st, err := readOverlayState(ctx, c)
-		converged := err == nil && st.declared != "" && st.declared == st.recomputed &&
+		if err != nil {
+			return err
+		}
+		converged := st.declared != "" && st.declared == st.recomputed &&
 			st.declared == st.mounted && st.declared == st.accepted && st.declared == st.serving
 		if converged && st == last {
 			stable++
-			if stable >= 2 {
-				return nil
-			}
 		} else {
 			stable = 0
 		}
 		last = st
-		if time.Now().After(deadline) {
-			return context.DeadlineExceeded
+		if stable >= 2 {
+			return nil
 		}
-		time.Sleep(2 * time.Second)
-	}
+		return fmt.Errorf("not yet 2 stable samples")
+	})
 }

@@ -98,26 +98,25 @@ func TestProviderSetTransition(t *testing.T) {
 // waitActiveProviders polls until the overlay is converged with exactly the wanted
 // providers active (two stable samples).
 func waitActiveProviders(ctx context.Context, c *envconf.Config, wantA, wantB bool, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
 	stable := 0
 	var last overlayState
-	for {
+	return funcs.Retry(ctx, timeout, 2*time.Second, fmt.Sprintf("providers converged a=%v b=%v", wantA, wantB), func(ctx context.Context) error {
 		st, err := readOverlayState(ctx, c)
-		converged := err == nil && st.declared != "" && st.declared == st.recomputed &&
+		if err != nil {
+			return err
+		}
+		converged := st.declared != "" && st.declared == st.recomputed &&
 			st.declared == st.mounted && st.declared == st.accepted && st.declared == st.serving &&
 			st.activeA == wantA && st.activeB == wantB
 		if converged && st == last {
 			stable++
-			if stable >= 2 {
-				return nil
-			}
 		} else {
 			stable = 0
 		}
 		last = st
-		if time.Now().After(deadline) {
-			return fmt.Errorf("providers not converged to a=%v b=%v: %+v", wantA, wantB, last)
+		if stable >= 2 {
+			return nil
 		}
-		time.Sleep(2 * time.Second)
-	}
+		return fmt.Errorf("not yet 2 stable samples: %+v", st)
+	})
 }
