@@ -12,7 +12,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/funcs"
 	"github.com/praxis-proxy/dockyard/gateway"
 )
 
@@ -23,7 +23,7 @@ import (
 func TestExtProcStreaming(t *testing.T) {
 	f := features.New("ExtProc streaming: SSE chunks arrive incrementally").
 		Assess("stream=true yields >=2 data chunks with a measurable inter-chunk delay", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-			apiFwd, err := feature.PortForwardService(ctx, c, "maas-system", maasAPIService, maasAPIHTTPSPort)
+			apiFwd, err := funcs.PortForwardService(ctx, c, "maas-system", maasAPIService, maasAPIHTTPSPort)
 			if err != nil {
 				t.Fatalf("port-forward maas-api: %v", err)
 			}
@@ -36,7 +36,7 @@ func TestExtProcStreaming(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mint MaaS key: %v", err)
 			}
-			gwFwd, err := feature.PortForwardService(ctx, c, "maas-system", gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, "maas-system", gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}

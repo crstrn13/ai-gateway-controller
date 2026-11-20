@@ -32,8 +32,8 @@ import (
 
 	aigatewayv1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/aigateway/v1alpha1"
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/inference/v1alpha1"
-	"github.com/praxis-proxy/dockyard"
-	"github.com/praxis-proxy/dockyard/install"
+	"github.com/praxis-proxy/dockyard/config"
+	"github.com/praxis-proxy/dockyard/funcs"
 )
 
 // Namespace label keys applied during provisioning (run.sh:671-673).
@@ -80,7 +80,8 @@ func platformImagesFromEnv() platformImages {
 	}
 }
 
-// MaaSPlatform is the dockyard.Vessel for the kind-env MaaS platform. In this
+// MaaSPlatform provisions the kind-env MaaS platform for the suite. TestMain calls
+// its InstallDeps/AddTypesToScheme/Teardown directly (no framework seam). In the
 // strangler-bridge stage it owns no in-process control plane: run.sh builds and
 // deploys the controller image and the whole MaaS platform. InstallDeps delegates
 // to run.sh --provision; Teardown runs run.sh --destroy. As phases are ported, the
@@ -112,7 +113,7 @@ type MaaSPlatform struct {
 	maasAPIRuntimeImage string
 	// ca is the run-owned CA, retained after provisionCerts to sign the katan
 	// provider serving certs and publish the provider-trust ConfigMap in PG5b.
-	ca *install.CA
+	ca *funcs.CA
 }
 
 // NewMaaSPlatform builds the vessel. The source-repo and image environment
@@ -136,14 +137,11 @@ func NewMaaSPlatform(runScript, cluster, evidenceRoot string, native bool) *MaaS
 	}
 }
 
-// Compile-time assertion that MaaSPlatform satisfies the Vessel seam.
-var _ dockyard.Vessel = (*MaaSPlatform)(nil)
-
 // InstallDeps provisions the platform. Default (bridge): delegate the whole
 // provisioning to run.sh --provision. Native (-native-provision): compose dockyard
 // installers phase-group by phase-group; incomplete until parity, so it stays
 // opt-in. Both run with -create-cluster=false (run.sh / native own cluster create).
-func (p *MaaSPlatform) InstallDeps(e *dockyard.Environment) []env.Func {
+func (p *MaaSPlatform) InstallDeps(e *config.Environment) []env.Func {
 	if p.native {
 		return p.provisionNative(e)
 	}
@@ -162,43 +160,43 @@ func (p *MaaSPlatform) InstallDeps(e *dockyard.Environment) []env.Func {
 // cluster infra (Gateway API, cert-manager, istio, kuadrant). istio is installed
 // before kuadrant so kuadrant's operator restart (inside InstallKuadrant)
 // rediscovers the Gateway API provider — matching run.sh's ordering.
-func (p *MaaSPlatform) provisionNative(e *dockyard.Environment) []env.Func {
+func (p *MaaSPlatform) provisionNative(e *config.Environment) []env.Func {
 	cluster := p.cluster
 	isKind := e.ShouldCreateCluster() // native cluster-create is a later phase-group
 
-	deps := install.NewDeps().
+	deps := funcs.NewDeps().
 		// phase-group 0: build images host-side, in parallel. The slow Rust ext-proc
 		// build overlaps the Go builds — the big cold-provision win (run.sh:471-575).
 		WithParallel(
-			install.BuildImageFrom(p.aigcRoot, filepath.Join(p.aigcRoot, "Dockerfile"), p.images.aiController),
-			install.BuildImageFrom(p.extprocRepo, filepath.Join(p.extprocRepo, "Containerfile"), p.images.extproc),
-			install.BuildImageFrom(filepath.Join(p.maasControllerRepo, "maas-api"), filepath.Join(p.maasControllerRepo, "maas-api", "Dockerfile"), p.images.maasAPI),
-			install.BuildImageFrom(p.maasControllerRepo, filepath.Join(p.maasControllerRepo, "maas-controller", "Dockerfile"), p.images.maasController),
+			funcs.BuildImageFrom(p.aigcRoot, filepath.Join(p.aigcRoot, "Dockerfile"), p.images.aiController),
+			funcs.BuildImageFrom(p.extprocRepo, filepath.Join(p.extprocRepo, "Containerfile"), p.images.extproc),
+			funcs.BuildImageFrom(filepath.Join(p.maasControllerRepo, "maas-api"), filepath.Join(p.maasControllerRepo, "maas-api", "Dockerfile"), p.images.maasAPI),
+			funcs.BuildImageFrom(p.maasControllerRepo, filepath.Join(p.maasControllerRepo, "maas-controller", "Dockerfile"), p.images.maasController),
 			p.buildRecorder,
 		).
 		// phase-group 1a: load the built images + pull/tag/load the public katan digest
 		// into the node (independent → parallel; the cluster already exists).
 		WithParallel(
-			install.LoadImage(cluster, p.images.aiController, isKind),
-			install.LoadImage(cluster, p.images.extproc, isKind),
-			install.LoadImage(cluster, p.images.maasAPI, isKind),
-			install.LoadImage(cluster, p.images.maasController, isKind),
-			install.LoadImage(cluster, p.images.providerRecorder, isKind),
-			install.EnvFuncs( // pull→tag→load must stay ordered
-				install.PullImage(katanPullImage),
-				install.TagImage(katanPullImage, p.images.katan),
-				install.LoadImage(cluster, p.images.katan, isKind),
+			funcs.LoadImage(cluster, p.images.aiController, isKind),
+			funcs.LoadImage(cluster, p.images.extproc, isKind),
+			funcs.LoadImage(cluster, p.images.maasAPI, isKind),
+			funcs.LoadImage(cluster, p.images.maasController, isKind),
+			funcs.LoadImage(cluster, p.images.providerRecorder, isKind),
+			funcs.EnvFuncs( // pull→tag→load must stay ordered
+				funcs.PullImage(katanPullImage),
+				funcs.TagImage(katanPullImage, p.images.katan),
+				funcs.LoadImage(cluster, p.images.katan, isKind),
 			),
 		).
 		// phase-group 1b: cluster infra. Gateway API + cert-manager are independent
 		// (parallel); istio needs the Gateway API CRDs first, and kuadrant is installed
 		// after istio so its operator restart rediscovers the Gateway API provider.
 		WithParallel(
-			install.InstallGatewayAPI(install.GatewayAPIVersion(gatewayAPIVersion)),
-			install.InstallCertManager(install.CertManagerVersion(certManagerVer)),
+			funcs.InstallGatewayAPI(funcs.GatewayAPIVersion(gatewayAPIVersion)),
+			funcs.InstallCertManager(funcs.CertManagerVersion(certManagerVer)),
 		).
-		WithIstio(install.IstioVersion(istioVer), install.IstioInferenceExtension(true)).
-		WithKuadrant(install.KuadrantVersion(kuadrantVer)).
+		WithIstio(funcs.IstioVersion(istioVer), funcs.IstioInferenceExtension(true)).
+		WithKuadrant(funcs.KuadrantVersion(kuadrantVer)).
 		// phase-group 2: namespaces + labels (run.sh:666-674)
 		WithNamespace(gatewayNamespace, nil).
 		WithNamespace("opendatahub", nil).
@@ -217,8 +215,8 @@ func (p *MaaSPlatform) provisionNative(e *dockyard.Environment) []env.Func {
 		With(p.ownerRefGatewayService("maas-tenant-b-gateway")).
 		With(p.ownerRefGatewayService("maas-transition-gateway")).
 		// phase-group 2: MaaS networking + KServe CRDs (run.sh:683-686)
-		With(install.Manifest(filepath.Join(p.maasControllerRepo, "deployment/base/networking/odh/kuadrant.yaml"))).
-		With(install.Manifest(filepath.Join(p.kserveRepo, "test/crds/serving.kserve.io_all_crds.yaml"))).
+		With(funcs.Manifest(filepath.Join(p.maasControllerRepo, "deployment/base/networking/odh/kuadrant.yaml"))).
+		With(funcs.Manifest(filepath.Join(p.kserveRepo, "test/crds/serving.kserve.io_all_crds.yaml"))).
 		// phase-group 3: run-owned CA + serving certs + Authorino CA (run.sh:702-782)
 		With(p.provisionCerts).
 		// phase-group 4c: local registry → push maas-api, set MAAS_API_RUNTIME_IMAGE
@@ -259,14 +257,14 @@ func maasServiceSANs(base string) []string {
 // ConfigMap (run.sh:702-782). Pure crypto/x509 — no openssl. The Authorino volume/
 // env wiring that consumes the CA lands in phase-group 4.
 func (p *MaaSPlatform) provisionCerts(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-	ca, err := install.GenerateCA("external-model-e2e-ca", certValidity)
+	ca, err := funcs.GenerateCA("external-model-e2e-ca", certValidity)
 	if err != nil {
 		return ctx, fmt.Errorf("generate run-owned CA: %w", err)
 	}
 	p.ca = ca
 
 	// Self-signed controller webhook/metrics cert (run.sh:703-709).
-	ctrlCert, ctrlKey, err := install.GenerateSelfSignedServingCert(
+	ctrlCert, ctrlKey, err := funcs.GenerateSelfSignedServingCert(
 		"maas-controller-webhook-service.maas-system.svc",
 		[]string{
 			"maas-controller-webhook-service",
@@ -295,12 +293,12 @@ func (p *MaaSPlatform) provisionCerts(ctx context.Context, cfg *envconf.Config) 
 	}
 
 	steps := []env.Func{
-		install.CreateTLSSecret(gatewayNamespace, "maas-controller-webhook-cert", ctrlCert, ctrlKey),
-		install.CreateTLSSecret(gatewayNamespace, "maas-controller-metrics-tls", ctrlCert, ctrlKey),
-		install.CreateTLSSecret(gatewayNamespace, "maas-api-serving-cert", apiCert, apiKey),
-		install.CreateTLSSecret(gatewayNamespace, "maas-api-tenant-b-serving-cert", tbCert, tbKey),
-		install.CreateTLSSecret(gatewayNamespace, "maas-api-transition-serving-cert", trCert, trKey),
-		install.CreateConfigMap("kuadrant-system", "authorino-maas-api-ca", map[string]string{"ca.crt": string(ca.CertPEM)}),
+		funcs.CreateTLSSecret(gatewayNamespace, "maas-controller-webhook-cert", ctrlCert, ctrlKey),
+		funcs.CreateTLSSecret(gatewayNamespace, "maas-controller-metrics-tls", ctrlCert, ctrlKey),
+		funcs.CreateTLSSecret(gatewayNamespace, "maas-api-serving-cert", apiCert, apiKey),
+		funcs.CreateTLSSecret(gatewayNamespace, "maas-api-tenant-b-serving-cert", tbCert, tbKey),
+		funcs.CreateTLSSecret(gatewayNamespace, "maas-api-transition-serving-cert", trCert, trKey),
+		funcs.CreateConfigMap("kuadrant-system", "authorino-maas-api-ca", map[string]string{"ca.crt": string(ca.CertPEM)}),
 	}
 	for _, step := range steps {
 		if ctx, err = step(ctx, cfg); err != nil {
@@ -328,14 +326,14 @@ func (p *MaaSPlatform) applyTranslationSchema(ctx context.Context, cfg *envconf.
 	if schemaFile == "" {
 		return ctx, nil // not applied; selected controller already has spec.apiTranslation
 	}
-	return install.Manifest(schemaFile)(ctx, cfg)
+	return funcs.Manifest(schemaFile)(ctx, cfg)
 }
 
 // wireAuthorinoCA makes Authorino trust the run-owned MaaS API CA (run.sh:787-824):
 // wait for the Authorino CR, merge-patch the CA volume mount, wait for the operator
 // to roll the Deployment, then point Go's TLS trust env at the mounted CA.
 func (p *MaaSPlatform) wireAuthorinoCA(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-	ctx, err := install.WaitForResource(authorinoGVK, "kuadrant-system", "authorino", 2*time.Minute)(ctx, cfg)
+	ctx, err := funcs.WaitForResource(authorinoGVK, "kuadrant-system", "authorino", 2*time.Minute)(ctx, cfg)
 	if err != nil {
 		return ctx, fmt.Errorf("kuadrant did not create the Authorino CR: %w", err)
 	}
@@ -354,12 +352,12 @@ func (p *MaaSPlatform) wireAuthorinoCA(ctx context.Context, cfg *envconf.Config)
 	// NOTE: run.sh gates on the exact mount being present before continuing; here we
 	// wait for Available then set env — tighten to the mount check when runnable.
 	steps := []env.Func{
-		install.WaitForDeploymentAvailable("kuadrant-system", "authorino", 3*time.Minute),
-		install.SetDeploymentEnv("kuadrant-system", "authorino", "", map[string]string{
+		funcs.WaitForDeploymentAvailable("kuadrant-system", "authorino", 3*time.Minute),
+		funcs.SetDeploymentEnv("kuadrant-system", "authorino", "", map[string]string{
 			"SSL_CERT_FILE":      "/etc/ssl/certs/maas-api-serving-ca.crt",
 			"REQUESTS_CA_BUNDLE": "/etc/ssl/certs/maas-api-serving-ca.crt",
 		}),
-		install.WaitForDeploymentAvailable("kuadrant-system", "authorino", 3*time.Minute),
+		funcs.WaitForDeploymentAvailable("kuadrant-system", "authorino", 3*time.Minute),
 	}
 	for _, step := range steps {
 		if ctx, err = step(ctx, cfg); err != nil {
@@ -406,22 +404,22 @@ func (p *MaaSPlatform) provisionTenants(ctx context.Context, cfg *envconf.Config
 
 	// AITenants first, so MaaS materializes each MaasTenantConfig before the handoff.
 	for _, f := range []string{"20-fixtures.yaml", "21-fixtures-tenant-b.yaml", "42-transition-fixtures.yaml"} {
-		if !step(install.ApplyManifestOnlyKinds(filepath.Join(p.manifestsDir, f), "AITenant")) {
+		if !step(funcs.ApplyManifestOnlyKinds(filepath.Join(p.manifestsDir, f), "AITenant")) {
 			return ctx, err
 		}
 	}
 
 	// Praxis opt-in: wait for the MaaS-owned config, select the praxis path, wait steady.
 	for _, ns := range []string{"models-as-a-service", "ai-tenant-tenant-b"} {
-		if !step(install.WaitForResource(maasTenantConfigGVK, ns, "default-tenant", 3*time.Minute)) ||
-			!step(install.AnnotateResource(maasTenantConfigGVK, ns, "default-tenant", map[string]string{payloadTypeAnnotation: "praxis"})) ||
-			!step(install.WaitForAnnotation(maasTenantConfigGVK, ns, "default-tenant", payloadStatusAnnotation, "steady", 3*time.Minute)) {
+		if !step(funcs.WaitForResource(maasTenantConfigGVK, ns, "default-tenant", 3*time.Minute)) ||
+			!step(funcs.AnnotateResource(maasTenantConfigGVK, ns, "default-tenant", map[string]string{payloadTypeAnnotation: "praxis"})) ||
+			!step(funcs.WaitForAnnotation(maasTenantConfigGVK, ns, "default-tenant", payloadStatusAnnotation, "steady", 3*time.Minute)) {
 			return ctx, err
 		}
 	}
 	// The transition tenant stays on the MaaS-owned IPP path.
-	if !step(install.WaitForResource(maasTenantConfigGVK, "ai-tenant-transition", "default-tenant", 3*time.Minute)) ||
-		!step(install.AnnotateResource(maasTenantConfigGVK, "ai-tenant-transition", "default-tenant", map[string]string{payloadTypeAnnotation: "ipp"})) {
+	if !step(funcs.WaitForResource(maasTenantConfigGVK, "ai-tenant-transition", "default-tenant", 3*time.Minute)) ||
+		!step(funcs.AnnotateResource(maasTenantConfigGVK, "ai-tenant-transition", "default-tenant", map[string]string{payloadTypeAnnotation: "ipp"})) {
 		return ctx, err
 	}
 
@@ -445,7 +443,7 @@ func (p *MaaSPlatform) provisionTenants(ctx context.Context, cfg *envconf.Config
 		if signErr != nil {
 			return ctx, fmt.Errorf("katan cert %s: %w", k.secret, signErr)
 		}
-		if !step(install.CreateTLSSecret(gatewayNamespace, k.secret, cert, key)) {
+		if !step(funcs.CreateTLSSecret(gatewayNamespace, k.secret, cert, key)) {
 			return ctx, err
 		}
 	}
@@ -454,9 +452,9 @@ func (p *MaaSPlatform) provisionTenants(ctx context.Context, cfg *envconf.Config
 	// provider DestinationRules; service-ca (key service-ca.crt) is the OpenShift
 	// service-ca stand-in the ext-proc clusters reference. Both are the run CA; the
 	// gateway mounts happen after the final gateway apply so istio doesn't revert them.
-	if !step(install.CreateConfigMap(gatewayNamespace, "external-model-e2e-provider-ca",
+	if !step(funcs.CreateConfigMap(gatewayNamespace, "external-model-e2e-provider-ca",
 		map[string]string{"ca.crt": string(p.ca.CertPEM)})) ||
-		!step(install.CreateConfigMap(gatewayNamespace, "gateway-service-ca",
+		!step(funcs.CreateConfigMap(gatewayNamespace, "gateway-service-ca",
 			map[string]string{"service-ca.crt": string(p.ca.CertPEM)})) {
 		return ctx, err
 	}
@@ -477,12 +475,12 @@ func (p *MaaSPlatform) provisionTenants(ctx context.Context, cfg *envconf.Config
 	// MaaS model refs/subscriptions, then the ExternalModels (non-AITenant) — in this
 	// order so the disabled IPP writer never observes the models first (run.sh:1257-1275).
 	for _, f := range []string{"40-maas-fixtures.yaml", "41-maas-fixtures-tenant-b.yaml"} {
-		if !step(install.Manifest(filepath.Join(p.manifestsDir, f))) {
+		if !step(funcs.Manifest(filepath.Join(p.manifestsDir, f))) {
 			return ctx, err
 		}
 	}
 	for _, f := range []string{"42-transition-fixtures.yaml", "20-fixtures.yaml", "21-fixtures-tenant-b.yaml"} {
-		if !step(install.ApplyManifestExcludingKinds(filepath.Join(p.manifestsDir, f), "AITenant")) {
+		if !step(funcs.ApplyManifestExcludingKinds(filepath.Join(p.manifestsDir, f), "AITenant")) {
 			return ctx, err
 		}
 	}
@@ -499,9 +497,9 @@ func (p *MaaSPlatform) provisionTenants(ctx context.Context, cfg *envconf.Config
 	// rolls the gateway; the subscription-ready gate below waits for it to settle.
 	deploymentGVK := schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}
 	for _, gw := range []string{"maas-default-gateway-istio", "maas-tenant-b-gateway-istio", "maas-transition-gateway-istio"} {
-		if !step(install.WaitForResource(deploymentGVK, gatewayNamespace, gw, 3*time.Minute)) ||
-			!step(install.MountConfigMapVolume(gatewayNamespace, gw, "istio-proxy", "gateway-service-ca", "/var/run/secrets/kubernetes.io/serviceaccount")) ||
-			!step(install.MountConfigMapVolume(gatewayNamespace, gw, "istio-proxy", "external-model-e2e-provider-ca", "/etc/external-model-e2e/provider-ca")) {
+		if !step(funcs.WaitForResource(deploymentGVK, gatewayNamespace, gw, 3*time.Minute)) ||
+			!step(funcs.MountConfigMapVolume(gatewayNamespace, gw, "istio-proxy", "gateway-service-ca", "/var/run/secrets/kubernetes.io/serviceaccount")) ||
+			!step(funcs.MountConfigMapVolume(gatewayNamespace, gw, "istio-proxy", "external-model-e2e-provider-ca", "/etc/external-model-e2e/provider-ca")) {
 			return ctx, err
 		}
 	}
@@ -509,7 +507,7 @@ func (p *MaaSPlatform) provisionTenants(ctx context.Context, cfg *envconf.Config
 	// Readiness gate: wait for the tenant subscriptions to reach Active (their models
 	// healthy) before trials — otherwise a key mint 403s with "model unhealthy".
 	for _, ns := range []string{"models-as-a-service", "ai-tenant-tenant-b"} {
-		if !step(install.WaitForPhase(maasSubscriptionGVK, ns, "kind-e2e-subscription", "Active", 5*time.Minute)) {
+		if !step(funcs.WaitForPhase(maasSubscriptionGVK, ns, "kind-e2e-subscription", "Active", 5*time.Minute)) {
 			return ctx, err
 		}
 	}
@@ -550,12 +548,12 @@ func (p *MaaSPlatform) applyFixtureGlob(ctx context.Context, cfg *envconf.Config
 				return ctx, readErr
 			}
 			rewritten := strings.ReplaceAll(string(data), katanIndexDigest, p.images.katan)
-			if ctx, err = install.ApplyYAMLBytes([]byte(rewritten))(ctx, cfg); err != nil {
+			if ctx, err = funcs.ApplyYAMLBytes([]byte(rewritten))(ctx, cfg); err != nil {
 				return ctx, err
 			}
 			continue
 		}
-		if ctx, err = install.Manifest(path)(ctx, cfg); err != nil {
+		if ctx, err = funcs.Manifest(path)(ctx, cfg); err != nil {
 			return ctx, err
 		}
 	}
@@ -586,7 +584,7 @@ func (p *MaaSPlatform) applyExternalModelProviders(ctx context.Context, cfg *env
 			return "${" + v + "}" // leave unknown refs intact (envsubst with explicit vars)
 		}
 	})
-	return install.ApplyYAMLBytes([]byte(rendered))(ctx, cfg)
+	return funcs.ApplyYAMLBytes([]byte(rendered))(ctx, cfg)
 }
 
 // aigcControllerArgs is the ai-gateway-controller arg array run.sh patches in
@@ -615,15 +613,15 @@ func aigcControllerArgs(extprocImage string) []string {
 // and the controller Deployment pinned to the loaded image with the ext-proc image +
 // known-cluster args (run.sh:838-944).
 func (p *MaaSPlatform) provisionAIGatewayController(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-	crds, err := install.RenderKustomize(filepath.Join(p.aigcRoot, "config/crd"))
+	crds, err := funcs.RenderKustomize(filepath.Join(p.aigcRoot, "config/crd"))
 	if err != nil {
 		return ctx, err
 	}
-	self, err := install.RenderKustomize(filepath.Join(p.aigcRoot, "config/self/default"))
+	self, err := funcs.RenderKustomize(filepath.Join(p.aigcRoot, "config/self/default"))
 	if err != nil {
 		return ctx, err
 	}
-	metricsCert, metricsKey, err := install.GenerateSelfSignedServingCert(
+	metricsCert, metricsKey, err := funcs.GenerateSelfSignedServingCert(
 		"ai-gateway-controller-metrics.opendatahub.svc",
 		[]string{
 			"ai-gateway-controller-metrics",
@@ -635,12 +633,12 @@ func (p *MaaSPlatform) provisionAIGatewayController(ctx context.Context, cfg *en
 	}
 
 	steps := []env.Func{
-		install.ApplyYAMLBytes(crds),
-		install.CreateTLSSecret("opendatahub", "ai-gateway-controller-metrics-tls", metricsCert, metricsKey),
-		install.ApplyYAMLBytesExcludingKinds(self, "ServiceMonitor"),
-		install.SetDeploymentImage("opendatahub", "ai-gateway-controller", "manager", p.images.aiController),
-		install.SetDeploymentImagePullPolicy("opendatahub", "ai-gateway-controller", "manager", corev1.PullNever),
-		install.SetDeploymentArgs("opendatahub", "ai-gateway-controller", "manager", aigcControllerArgs(p.images.extproc)),
+		funcs.ApplyYAMLBytes(crds),
+		funcs.CreateTLSSecret("opendatahub", "ai-gateway-controller-metrics-tls", metricsCert, metricsKey),
+		funcs.ApplyYAMLBytesExcludingKinds(self, "ServiceMonitor"),
+		funcs.SetDeploymentImage("opendatahub", "ai-gateway-controller", "manager", p.images.aiController),
+		funcs.SetDeploymentImagePullPolicy("opendatahub", "ai-gateway-controller", "manager", corev1.PullNever),
+		funcs.SetDeploymentArgs("opendatahub", "ai-gateway-controller", "manager", aigcControllerArgs(p.images.extproc)),
 	}
 	for _, step := range steps {
 		if ctx, err = step(ctx, cfg); err != nil {
@@ -660,7 +658,7 @@ func (p *MaaSPlatform) buildRecorder(ctx context.Context, cfg *envconf.Config) (
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return ctx, fmt.Errorf("build provider-recorder binary: %w\n%s", err, out)
 	}
-	return install.BuildImageFrom(dir, filepath.Join(dir, "Dockerfile"), p.images.providerRecorder)(ctx, cfg)
+	return funcs.BuildImageFrom(dir, filepath.Join(dir, "Dockerfile"), p.images.providerRecorder)(ctx, cfg)
 }
 
 // provisionRegistry stands up the run-owned local registry, wires the cluster's
@@ -669,7 +667,7 @@ func (p *MaaSPlatform) buildRecorder(ctx context.Context, cfg *envconf.Config) (
 // resolves the source-built image (run.sh create_run_registry). Requires the cluster
 // to already exist (native mode: run with -create-cluster=true).
 func (p *MaaSPlatform) provisionRegistry(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-	reg := install.NewLocalRegistry(p.cluster+"-registry", p.cluster+"-registry-net")
+	reg := funcs.NewLocalRegistry(p.cluster+"-registry", p.cluster+"-registry-net")
 	if err := reg.Start(ctx); err != nil {
 		return ctx, err
 	}
@@ -709,30 +707,30 @@ var controllerArgs = []string{
 // network fixtures (run.sh:719-736, 826-828). The local-registry runtime image, the
 // translation-schema overlay and the Authorino CA wiring are phase-group 4b.
 func (p *MaaSPlatform) provisionMaaS(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-	rendered, err := install.RenderKustomize(filepath.Join(p.maasControllerRepo, "deployment/base/maas-controller/default"))
+	rendered, err := funcs.RenderKustomize(filepath.Join(p.maasControllerRepo, "deployment/base/maas-controller/default"))
 	if err != nil {
 		return ctx, err
 	}
-	rbac, err := install.RenderKustomize(filepath.Join(p.maasControllerRepo, "deployment/base/maas-api/rbac"))
+	rbac, err := funcs.RenderKustomize(filepath.Join(p.maasControllerRepo, "deployment/base/maas-api/rbac"))
 	if err != nil {
 		return ctx, err
 	}
 
 	steps := []env.Func{
 		// controller bundle: transform then apply, dropping the OpenShift-only kinds.
-		install.ApplyYAMLBytesExcludingKinds(p.transformControllerBundle(rendered),
+		funcs.ApplyYAMLBytesExcludingKinds(p.transformControllerBundle(rendered),
 			"ServiceMonitor", "ValidatingWebhookConfiguration"),
 		// run the source-built binary directly against the run-owned config (run.sh:726-731).
-		install.SetDeploymentEnv(gatewayNamespace, "maas-controller", "",
+		funcs.SetDeploymentEnv(gatewayNamespace, "maas-controller", "",
 			map[string]string{"RELATED_IMAGE_ODH_MAAS_API_IMAGE": p.maasAPIRuntimeImage}),
-		install.SetDeploymentImagePullPolicy(gatewayNamespace, "maas-controller", "", corev1.PullNever),
-		install.SetDeploymentCommand(gatewayNamespace, "maas-controller", "", []string{"/manager"}),
-		install.SetDeploymentArgs(gatewayNamespace, "maas-controller", "", controllerArgs),
-		install.RestartDeployment(gatewayNamespace, "maas-controller"),
+		funcs.SetDeploymentImagePullPolicy(gatewayNamespace, "maas-controller", "", corev1.PullNever),
+		funcs.SetDeploymentCommand(gatewayNamespace, "maas-controller", "", []string{"/manager"}),
+		funcs.SetDeploymentArgs(gatewayNamespace, "maas-controller", "", controllerArgs),
+		funcs.RestartDeployment(gatewayNamespace, "maas-controller"),
 		// maas-api RBAC + kind network fixtures.
-		install.ApplyYAMLBytes([]byte(strings.ReplaceAll(string(rbac), "namespace: opendatahub", "namespace: maas-system"))),
-		install.Manifest(filepath.Join(p.manifestsDir, "31-maas-api-kind-rbac.yaml")),
-		install.Manifest(filepath.Join(p.manifestsDir, "32-maas-api-kind-network.yaml")),
+		funcs.ApplyYAMLBytes([]byte(strings.ReplaceAll(string(rbac), "namespace: opendatahub", "namespace: maas-system"))),
+		funcs.Manifest(filepath.Join(p.manifestsDir, "31-maas-api-kind-rbac.yaml")),
+		funcs.Manifest(filepath.Join(p.manifestsDir, "32-maas-api-kind-network.yaml")),
 	}
 	for _, step := range steps {
 		if ctx, err = step(ctx, cfg); err != nil {
@@ -772,7 +770,7 @@ func (p *MaaSPlatform) signExtProcServingCerts(ctx context.Context, cfg *envconf
 	}
 	var err error
 	for _, ns := range []string{gatewayNamespace, "models-as-a-service", "ai-tenant-tenant-b"} {
-		if ctx, err = install.SignAnnotatedServiceCerts(p.ca, ns, certValidity, 2*time.Minute)(ctx, cfg); err != nil {
+		if ctx, err = funcs.SignAnnotatedServiceCerts(p.ca, ns, certValidity, 2*time.Minute)(ctx, cfg); err != nil {
 			return ctx, err
 		}
 	}
@@ -839,13 +837,6 @@ func (p *MaaSPlatform) AddTypesToScheme() env.Func {
 		return ctx, nil
 	}
 }
-
-// Enabled reports false: the controller is a deployed image provisioned by run.sh,
-// not an in-process manager (unlike the test/e2e AIGateway/ControlPlaneVessel).
-func (p *MaaSPlatform) Enabled() bool { return false }
-
-// Install is a no-op: the control plane is part of run.sh provisioning for now.
-func (p *MaaSPlatform) Install() (setup []env.Func, teardown env.Func) { return nil, nil }
 
 // Teardown runs run.sh --destroy (ownership-checked in run.sh). Registered on the
 // suite's Finish by TestMain.

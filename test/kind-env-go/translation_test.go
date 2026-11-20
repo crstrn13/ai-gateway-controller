@@ -25,9 +25,8 @@ import (
 
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/inference/v1alpha1"
 	"github.com/opendatahub-io/ai-gateway-controller/test/kind-env-go/contract"
-	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/funcs"
 	"github.com/praxis-proxy/dockyard/gateway"
-	"github.com/praxis-proxy/dockyard/install"
 )
 
 // Stage 5: the API-translation qualification from e2e-api-translation.py. Translation is a
@@ -96,7 +95,7 @@ func TestAPITranslation(t *testing.T) {
 			return ctx
 		}).
 		Assess("mounted ExtProc config enables translation with sane body-size limits", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-			cfg, err := feature.ExecInDeployment(ctx, c, tenantNamespace, extDeployment, "cat", "/etc/praxis/extproc.yaml")
+			cfg, err := funcs.ExecInDeployment(ctx, c, tenantNamespace, extDeployment, "cat", "/etc/praxis/extproc.yaml")
 			if err != nil {
 				t.Fatalf("read mounted ExtProc config: %v", err)
 			}
@@ -125,7 +124,7 @@ func TestAPITranslation(t *testing.T) {
 				t.Fatalf("anthropic-only did not converge: %v", err)
 			}
 
-			apiFwd, err := feature.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
+			apiFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
 			if err != nil {
 				t.Fatalf("port-forward maas-api: %v", err)
 			}
@@ -138,7 +137,7 @@ func TestAPITranslation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mint MaaS key: %v", err)
 			}
-			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}
@@ -167,7 +166,7 @@ func TestAPITranslation(t *testing.T) {
 		}).
 		Assess("a request over the translator input limit is rejected with 413", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			// Still routed to the Anthropic translation provider from the prior assessment.
-			apiFwd, err := feature.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
+			apiFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
 			if err != nil {
 				t.Fatalf("port-forward maas-api: %v", err)
 			}
@@ -180,7 +179,7 @@ func TestAPITranslation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mint MaaS key: %v", err)
 			}
-			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}
@@ -203,7 +202,7 @@ func TestAPITranslation(t *testing.T) {
 		}).
 		Assess("a streaming OpenAI request to the Anthropic provider yields translated OpenAI SSE chunks", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			// Still routed to the Anthropic translation provider.
-			apiFwd, err := feature.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
+			apiFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
 			if err != nil {
 				t.Fatalf("port-forward maas-api: %v", err)
 			}
@@ -216,7 +215,7 @@ func TestAPITranslation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mint MaaS key: %v", err)
 			}
-			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}
@@ -260,7 +259,7 @@ func TestAPITranslation(t *testing.T) {
 			if err := waitOverlayCandidates(ctx, c, []string{"provider-api-translation-openai"}, 3*time.Minute); err != nil {
 				t.Fatalf("openai-only did not converge: %v", err)
 			}
-			apiFwd, err := feature.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
+			apiFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
 			if err != nil {
 				t.Fatalf("port-forward maas-api: %v", err)
 			}
@@ -273,7 +272,7 @@ func TestAPITranslation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mint MaaS key: %v", err)
 			}
-			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}
@@ -326,7 +325,7 @@ func TestAPITranslation(t *testing.T) {
 			}
 			apiFwd, caPEM, key := translationClientSetup(ctx, t, c)
 			defer apiFwd.Close()
-			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}
@@ -406,7 +405,7 @@ func TestAPITranslation(t *testing.T) {
 			// Anthropic provider still active from the matrix assessment.
 			apiFwd, _, key := translationClientSetup(ctx, t, c)
 			defer apiFwd.Close()
-			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}
@@ -450,7 +449,7 @@ func TestAPITranslation(t *testing.T) {
 			}
 			apiFwd, caPEM, key := translationClientSetup(ctx, t, c)
 			defer apiFwd.Close()
-			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}
@@ -498,7 +497,7 @@ func TestAPITranslation(t *testing.T) {
 			}
 			apiFwd, _, key := translationClientSetup(ctx, t, c)
 			defer apiFwd.Close()
-			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}
@@ -525,9 +524,9 @@ func TestAPITranslation(t *testing.T) {
 
 // translationClientSetup port-forwards the maas-api, reads the run CA, and mints a key,
 // returning the open forward (caller closes), the CA PEM, and the bearer key.
-func translationClientSetup(ctx context.Context, t *testing.T, c *envconf.Config) (*feature.ForwardedPort, []byte, string) {
+func translationClientSetup(ctx context.Context, t *testing.T, c *envconf.Config) (*funcs.ForwardedPort, []byte, string) {
 	t.Helper()
-	apiFwd, err := feature.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
+	apiFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
 	if err != nil {
 		t.Fatalf("port-forward maas-api: %v", err)
 	}
@@ -564,7 +563,7 @@ type recorderObservation struct {
 // over HTTPS (run-CA-verified, SNI pinned to the recorder's cluster DNS).
 func fetchTranslationObservations(ctx context.Context, t *testing.T, c *envconf.Config, caPEM []byte) ([]recorderObservation, error) {
 	t.Helper()
-	fwd, err := feature.PortForwardService(ctx, c, apiNamespace, "provider-translation-ext", 8443)
+	fwd, err := funcs.PortForwardService(ctx, c, apiNamespace, "provider-translation-ext", 8443)
 	if err != nil {
 		return nil, err
 	}
@@ -606,7 +605,7 @@ func fetchTranslationObservations(ctx context.Context, t *testing.T, c *envconf.
 
 func provisionTranslationStack(ctx context.Context, t *testing.T, c *envconf.Config) error {
 	// Best-effort load the recorder image into kind (no-op if already present).
-	if _, err := install.LoadImage(nativeClusterName, recorderImage, true)(ctx, c); err != nil {
+	if _, err := funcs.LoadImage(nativeClusterName, recorderImage, true)(ctx, c); err != nil {
 		t.Logf("kind load %s (continuing; image may already be present): %v", recorderImage, err)
 	}
 
@@ -628,7 +627,7 @@ func provisionTranslationStack(ctx context.Context, t *testing.T, c *envconf.Con
 	}
 
 	// Provider-aware recorder backend (Deployment + 3 Services).
-	if _, err := install.Manifest("../kind-env/manifests/api-translation-provider-aware-backend.yaml")(ctx, c); err != nil {
+	if _, err := funcs.Manifest("../kind-env/manifests/api-translation-provider-aware-backend.yaml")(ctx, c); err != nil {
 		return fmt.Errorf("apply backend manifest: %w", err)
 	}
 	if err := waitDeploymentRolledOut(ctx, c, apiNamespace, translationBackendDeploy, 3*time.Minute); err != nil {
@@ -819,7 +818,7 @@ func updateDemoModelRefs(ctx context.Context, c *envconf.Config, refs []inferenc
 
 // overlayProfiles returns cluster → {api_format, target_model} from the mounted overlay.
 func overlayProfiles(ctx context.Context, c *envconf.Config) (map[string][2]string, error) {
-	raw, err := feature.ExecInDeployment(ctx, c, tenantNamespace, extDeployment, "cat", overlayMountPath)
+	raw, err := funcs.ExecInDeployment(ctx, c, tenantNamespace, extDeployment, "cat", overlayMountPath)
 	if err != nil {
 		return nil, err
 	}

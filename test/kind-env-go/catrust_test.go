@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/inference/v1alpha1"
-	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/funcs"
 	"github.com/praxis-proxy/dockyard/gateway"
 )
 
@@ -42,7 +42,7 @@ const (
 func TestProviderCATrust(t *testing.T) {
 	f := features.New("Provider CA trust: tls.credentialName (SDS) vs tls.caCertificates (file)").
 		Assess("missing credentialName fails closed generically, present verifies and serves, absent CA fails TLS, file CA recovers", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-			apiFwd, err := feature.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
+			apiFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
 			if err != nil {
 				t.Fatalf("port-forward maas-api: %v", err)
 			}
@@ -55,7 +55,7 @@ func TestProviderCATrust(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mint MaaS key: %v", err)
 			}
-			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}

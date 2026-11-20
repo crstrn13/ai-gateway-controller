@@ -10,7 +10,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/funcs"
 )
 
 // TestPlatformSmoke is the bridge's first Feature: it proves run.sh provisioning
@@ -20,7 +20,7 @@ import (
 func TestPlatformSmoke(t *testing.T) {
 	f := features.New("kind-env platform is provisioned and istiod is Available").
 		Assess("istiod Deployment becomes Available", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-			return feature.DeploymentBecomesAvailableWithin(3*time.Minute, "istio-system", "istiod")(ctx, t, c)
+			return funcs.DeploymentBecomesAvailableWithin(3*time.Minute, "istio-system", "istiod")(ctx, t, c)
 		}).
 		Feature()
 	testenv.Test(t, f)

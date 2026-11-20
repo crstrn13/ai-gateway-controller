@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/inference/v1alpha1"
-	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/funcs"
 	"github.com/praxis-proxy/dockyard/gateway"
 )
 
@@ -28,7 +28,7 @@ import (
 func TestAllZeroWithdrawal(t *testing.T) {
 	f := features.New("All-zero withdrawal: zero total weight withdraws the model and fails closed").
 		Assess("setting all weights to zero withdraws the route and fails requests closed, then recovers", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-			apiFwd, err := feature.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
+			apiFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
 			if err != nil {
 				t.Fatalf("port-forward maas-api: %v", err)
 			}
@@ -41,7 +41,7 @@ func TestAllZeroWithdrawal(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mint MaaS key: %v", err)
 			}
-			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}

@@ -15,12 +15,12 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/product"
-	"github.com/praxis-proxy/dockyard"
+	"github.com/praxis-proxy/dockyard/config"
 )
 
 // environment is the shared suite configuration. Test files reference it via
 // environment.Test(t, feature) and register extra suites in init().
-var environment = dockyard.NewEnvironmentFromFlags()
+var environment = config.NewEnvironmentFromFlags()
 
 func TestMain(m *testing.M) {
 	log.SetLogger(klog.NewKlogr())
@@ -30,7 +30,7 @@ func TestMain(m *testing.M) {
 
 	// Set the repo-specific Product before flags are parsed — its constructor
 	// registers the product's own flags (-extproc-image, -run-controller, …).
-	environment.WithVessel(product.NewAIGateway())
+	vessel := product.NewAIGateway()
 
 	cfg, err := envconf.NewFromFlags()
 	if err != nil {
@@ -39,8 +39,8 @@ func TestMain(m *testing.M) {
 
 	// The base suite: the default set every Feature inherits.
 	environment.AddDefaultTestSuite(
-		dockyard.WithLabelsToSelect(features.Labels{
-			dockyard.LabelTestSuite: []string{dockyard.TestSuiteDefault},
+		config.WithLabelsToSelect(features.Labels{
+			config.LabelTestSuite: []string{config.TestSuiteDefault},
 		}),
 	)
 
@@ -58,19 +58,19 @@ func TestMain(m *testing.M) {
 	if environment.ShouldInstallDeps() {
 		// The product owns its dependency stack (cluster add-ons, CRDs, image,
 		// shared backend infra) and the order they install in.
-		setup = append(setup, environment.Vessel().InstallDeps(&environment)...)
+		setup = append(setup, vessel.InstallDeps(&environment)...)
 	}
 	// Suite-specific setup (e.g. a future llm-d suite that also installs a pool).
 	setup = append(setup, environment.GetSelectedSuiteAdditionalEnvSetup()...)
 	// Always register the product's CRD types on the client scheme.
-	setup = append(setup, environment.Vessel().AddTypesToScheme())
+	setup = append(setup, vessel.AddTypesToScheme())
 
 	// The AI Gateway reconcilers, run in-process (the "install the product" step,
 	// analogous to Crossplane's HelmInstallBaseCrossplane). Their watched CRDs
 	// must exist before the manager starts, so install those first. Given the real
 	// ext-proc image so the pods it renders actually run.
-	if environment.Vessel().Enabled() {
-		cpSetup, cpTeardown := environment.Vessel().Install()
+	if vessel.Enabled() {
+		cpSetup, cpTeardown := vessel.Install()
 		setup = append(setup, cpSetup...)
 		finish = append([]env.Func{cpTeardown}, finish...) // stop it before the cluster goes away
 	}
@@ -83,8 +83,8 @@ func TestMain(m *testing.M) {
 	// the same) — keeps suite filtering honest.
 	environment.BeforeEachFeature(func(ctx context.Context, _ *envconf.Config, t *testing.T, feature features.Feature) (context.Context, error) {
 		t.Helper()
-		if _, ok := feature.Labels()[dockyard.LabelTestSuite]; !ok {
-			t.Fatalf("Feature %q is missing the required %q label", feature.Name(), dockyard.LabelTestSuite)
+		if _, ok := feature.Labels()[config.LabelTestSuite]; !ok {
+			t.Fatalf("Feature %q is missing the required %q label", feature.Name(), config.LabelTestSuite)
 		}
 		return ctx, nil
 	})

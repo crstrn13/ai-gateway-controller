@@ -20,7 +20,7 @@ import (
 
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/inference/v1alpha1"
 	"github.com/opendatahub-io/ai-gateway-controller/pkg/envelope"
-	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/funcs"
 	"github.com/praxis-proxy/dockyard/gateway"
 )
 
@@ -54,7 +54,7 @@ func TestOverlayConvergence(t *testing.T) {
 	f := features.New("Overlay convergence: provider weight switch, identity stability, semantic no-op").
 		Assess("weight switch to B converges, attributes to katan-b, keeps ext-proc identity, resets to A, re-apply is a no-op", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			// A key + gateway port-forward to prove attribution after each switch.
-			apiFwd, err := feature.PortForwardService(ctx, c, "maas-system", maasAPIService, maasAPIHTTPSPort)
+			apiFwd, err := funcs.PortForwardService(ctx, c, "maas-system", maasAPIService, maasAPIHTTPSPort)
 			if err != nil {
 				t.Fatalf("port-forward maas-api: %v", err)
 			}
@@ -67,7 +67,7 @@ func TestOverlayConvergence(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mint MaaS key: %v", err)
 			}
-			gwFwd, err := feature.PortForwardService(ctx, c, "maas-system", gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, "maas-system", gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}
@@ -185,14 +185,14 @@ func readOverlayState(ctx context.Context, c *envconf.Config) (overlayState, err
 		}
 	}
 
-	mounted, err := feature.ExecInDeployment(ctx, c, tenantNamespace, extDeployment, "cat", overlayMountPath)
+	mounted, err := funcs.ExecInDeployment(ctx, c, tenantNamespace, extDeployment, "cat", overlayMountPath)
 	if err == nil && strings.TrimSpace(mounted) != "" {
 		if d, derr := envelope.ComputeDigestFromWire([]byte(mounted)); derr == nil {
 			st.mounted = d
 		}
 	}
 
-	logs, err := feature.DeploymentLogs(ctx, c, tenantNamespace, extDeployment, "", 200)
+	logs, err := funcs.DeploymentLogs(ctx, c, tenantNamespace, extDeployment, "", 200)
 	if err == nil {
 		st.accepted, st.serving = lastRevisions(logs)
 	}

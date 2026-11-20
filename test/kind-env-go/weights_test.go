@@ -12,7 +12,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/funcs"
 	"github.com/praxis-proxy/dockyard/gateway"
 	"github.com/praxis-proxy/dockyard/stats"
 )
@@ -31,7 +31,7 @@ const (
 func TestStaticProviderWeights(t *testing.T) {
 	f := features.New("Static provider weights: traffic split fits configured ratio (chi-square)").
 		Assess("50:50 and 95:5 weight ratios each fit under a chi-square goodness-of-fit test", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-			apiFwd, err := feature.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
+			apiFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
 			if err != nil {
 				t.Fatalf("port-forward maas-api: %v", err)
 			}
@@ -44,7 +44,7 @@ func TestStaticProviderWeights(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mint MaaS key: %v", err)
 			}
-			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}

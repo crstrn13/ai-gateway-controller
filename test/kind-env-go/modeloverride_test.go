@@ -19,7 +19,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/inference/v1alpha1"
-	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/funcs"
 	"github.com/praxis-proxy/dockyard/gateway"
 )
 
@@ -39,7 +39,7 @@ const (
 func TestModelCredentialOverride(t *testing.T) {
 	f := features.New("Model credential override: per-model Auth reaches the data plane, fails closed, recovers").
 		Assess("override secret reaches overlay/config/volume and serves, deletion fails closed, recreation recovers, removal restores default", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-			apiFwd, err := feature.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
+			apiFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
 			if err != nil {
 				t.Fatalf("port-forward maas-api: %v", err)
 			}
@@ -52,7 +52,7 @@ func TestModelCredentialOverride(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mint MaaS key: %v", err)
 			}
-			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}
@@ -250,7 +250,7 @@ type overlayCandidate struct {
 // mountedCredentialSecretRef reads the mounted overlay and returns the credential
 // secretRef name for the given candidate cluster.
 func mountedCredentialSecretRef(ctx context.Context, c *envconf.Config, cluster string) (string, error) {
-	raw, err := feature.ExecInDeployment(ctx, c, tenantNamespace, extDeployment, "cat", overlayMountPath)
+	raw, err := funcs.ExecInDeployment(ctx, c, tenantNamespace, extDeployment, "cat", overlayMountPath)
 	if err != nil {
 		return "", err
 	}
@@ -287,7 +287,7 @@ func extConfigReferences(ctx context.Context, c *envconf.Config, needle string) 
 // deploymentProjectsSecret reports whether the ext-proc Deployment projects secretName
 // as a volume source (projected or plain secret volume).
 func deploymentProjectsSecret(ctx context.Context, c *envconf.Config, secretName string) (bool, error) {
-	pod, err := feature.DeploymentPod(ctx, c, tenantNamespace, extDeployment)
+	pod, err := funcs.DeploymentPod(ctx, c, tenantNamespace, extDeployment)
 	if err != nil {
 		return false, err
 	}

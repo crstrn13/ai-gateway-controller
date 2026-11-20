@@ -28,12 +28,12 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 
 	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/product"
-	"github.com/praxis-proxy/dockyard"
+	"github.com/praxis-proxy/dockyard/config"
 )
 
 // testenv is the shared suite environment. Features reference it via
 // testenv.Test(t, feature).
-var testenv = dockyard.NewEnvironmentFromFlags()
+var testenv = config.NewEnvironmentFromFlags()
 
 // crdDirs are applied before the controllers start. The two config/ dirs are
 // this repo's own CRDs; the envtest testdata dir holds stub CRDs for the
@@ -56,7 +56,7 @@ func TestMain(m *testing.M) {
 	// "flag redefined". -v=N still works via the framework's own parsing.
 
 	// The control-plane-only vessel: CRDs + in-process reconcilers, no data plane.
-	testenv.WithVessel(product.NewControlPlaneVessel(crdDirs, controllerManifestPath))
+	vessel := product.NewControlPlaneVessel(crdDirs, controllerManifestPath)
 
 	cfg, err := envconf.NewFromFlags()
 	if err != nil {
@@ -78,12 +78,12 @@ func TestMain(m *testing.M) {
 	testenv.SetEnvironment(env.NewWithConfig(cfg))
 
 	// Always register the controller's CRD types on the client scheme.
-	setup = append(setup, testenv.Vessel().AddTypesToScheme())
+	setup = append(setup, vessel.AddTypesToScheme())
 
 	// Run the reconcilers in-process; their watched CRDs must exist before the
 	// manager starts, so the vessel installs those first (in Install).
-	if testenv.Vessel().Enabled() {
-		cpSetup, cpTeardown := testenv.Vessel().Install()
+	if vessel.Enabled() {
+		cpSetup, cpTeardown := vessel.Install()
 		setup = append(setup, cpSetup...)
 		finish = append([]env.Func{cpTeardown}, finish...) // stop it before the cluster goes away
 	}

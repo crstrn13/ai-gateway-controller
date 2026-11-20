@@ -17,9 +17,8 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/inference/v1alpha1"
-	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/funcs"
 	"github.com/praxis-proxy/dockyard/gateway"
-	"github.com/praxis-proxy/dockyard/install"
 	"github.com/praxis-proxy/dockyard/stats"
 )
 
@@ -46,7 +45,7 @@ func TestThreeProviderWeights(t *testing.T) {
 		Assess("2:1:1 and 50:25:25 weighted splits both fit the expected distribution", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			apiFwd, _, key := translationClientSetup(ctx, t, c)
 			defer apiFwd.Close()
-			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}
@@ -129,7 +128,7 @@ func TestThreeProviderWeights(t *testing.T) {
 			// Traffic is served only by the healthy siblings; proof-c gets none.
 			apiFwd, _, key := translationClientSetup(ctx, t, c)
 			defer apiFwd.Close()
-			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}
@@ -196,7 +195,7 @@ func classifyProof(body string) string {
 // --- provisioning ---
 
 func provisionProofStack(ctx context.Context, t *testing.T, c *envconf.Config) error {
-	if _, err := install.LoadImage(nativeClusterName, recorderImage, true)(ctx, c); err != nil {
+	if _, err := funcs.LoadImage(nativeClusterName, recorderImage, true)(ctx, c); err != nil {
 		t.Logf("kind load %s (continuing): %v", recorderImage, err)
 	}
 	for _, p := range proofProviders {
@@ -208,7 +207,7 @@ func provisionProofStack(ctx context.Context, t *testing.T, c *envconf.Config) e
 			return err
 		}
 	}
-	if _, err := install.Manifest("../kind-env/manifests/provider-selection-proof.yaml")(ctx, c); err != nil {
+	if _, err := funcs.Manifest("../kind-env/manifests/provider-selection-proof.yaml")(ctx, c); err != nil {
 		return fmt.Errorf("apply proof backends: %w", err)
 	}
 	for _, suffix := range []string{"a", "b", "c"} {
@@ -216,7 +215,7 @@ func provisionProofStack(ctx context.Context, t *testing.T, c *envconf.Config) e
 			return fmt.Errorf("proof-%s backend not ready (is %s loaded?): %w", suffix, recorderImage, err)
 		}
 	}
-	if _, err := install.Manifest("../kind-env/manifests/provider-proof-external-providers.yaml")(ctx, c); err != nil {
+	if _, err := funcs.Manifest("../kind-env/manifests/provider-proof-external-providers.yaml")(ctx, c); err != nil {
 		return fmt.Errorf("apply proof providers: %w", err)
 	}
 	for _, p := range proofProviders {

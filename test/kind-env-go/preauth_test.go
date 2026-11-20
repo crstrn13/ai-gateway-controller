@@ -15,7 +15,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/funcs"
 	"github.com/praxis-proxy/dockyard/gateway"
 )
 
@@ -34,7 +34,7 @@ const (
 func TestPreAuthTrustBoundary(t *testing.T) {
 	f := features.New("Pre-auth trust boundary: gateway fails closed when payload-pre-processing is down").
 		Assess("with pre-auth down the request is rejected and the provider is never contacted, then recovers", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-			apiFwd, err := feature.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
+			apiFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
 			if err != nil {
 				t.Fatalf("port-forward maas-api: %v", err)
 			}
@@ -47,7 +47,7 @@ func TestPreAuthTrustBoundary(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mint MaaS key: %v", err)
 			}
-			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}
@@ -141,7 +141,7 @@ func waitDeploymentReplicas(ctx context.Context, c *envconf.Config, namespace, n
 // providerRequestCount counts inference requests the katan-a backend has logged, used to
 // prove the provider was (not) contacted across a trust-boundary probe.
 func providerRequestCount(ctx context.Context, c *envconf.Config) (int, error) {
-	logs, err := feature.DeploymentLogs(ctx, c, apiNamespace, katanADeploy, "", 300)
+	logs, err := funcs.DeploymentLogs(ctx, c, apiNamespace, katanADeploy, "", 300)
 	if err != nil {
 		return 0, err
 	}

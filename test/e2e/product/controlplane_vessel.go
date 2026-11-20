@@ -12,8 +12,8 @@ import (
 
 	aigatewayv1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/aigateway/v1alpha1"
 	inferencev1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/inference/v1alpha1"
-	"github.com/praxis-proxy/dockyard"
-	"github.com/praxis-proxy/dockyard/install"
+	"github.com/praxis-proxy/dockyard/config"
+	"github.com/praxis-proxy/dockyard/funcs"
 )
 
 // addTypesToScheme registers this repo's CRD types (plus the client-go built-ins)
@@ -29,7 +29,7 @@ func addTypesToScheme(s *runtime.Scheme) error {
 	return nil
 }
 
-// ControlPlaneVessel is the control-plane-only dockyard.Vessel: it installs the
+// ControlPlaneVessel installs the control plane only: it installs the
 // controller's CRDs (this repo's own + stub CRDs for the external kinds it watches)
 // and runs the reconcilers in-process, with no data-plane dependencies (no metallb,
 // istio, kuadrant, gateway, or real ext-proc image). It backs the lightweight kind
@@ -48,12 +48,11 @@ func NewControlPlaneVessel(crdDirs []string, manifestPath string) *ControlPlaneV
 }
 
 // Compile-time assertion that ControlPlaneVessel satisfies the Vessel seam.
-var _ dockyard.Vessel = (*ControlPlaneVessel)(nil)
 
 // InstallDeps installs no data-plane dependencies — this suite is control-plane
 // only. The CRDs the controller needs are installed in Install, before the manager
 // starts, so its REST mapper resolves every watched kind.
-func (v *ControlPlaneVessel) InstallDeps(*dockyard.Environment) []env.Func { return nil }
+func (v *ControlPlaneVessel) InstallDeps(*config.Environment) []env.Func { return nil }
 
 // AddTypesToScheme registers the inference + aigateway CRD types on the suite
 // client scheme.
@@ -71,5 +70,5 @@ func (v *ControlPlaneVessel) Enabled() bool { return true }
 // a placeholder ext-proc image (this suite never runs the rendered pods).
 func (v *ControlPlaneVessel) Install() (setup []env.Func, teardown env.Func) {
 	cp := &ControlPlane{ManifestPath: v.manifestPath}
-	return []env.Func{install.InstallCRDs(v.crdDirs...), cp.Setup}, cp.Teardown
+	return []env.Func{funcs.InstallCRDs(v.crdDirs...), cp.Setup}, cp.Teardown
 }

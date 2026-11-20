@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/funcs"
 	"github.com/praxis-proxy/dockyard/gateway"
 )
 
@@ -50,7 +50,7 @@ func TestExtProcRouting(t *testing.T) {
 	f := features.New("ExtProc routing: auth gate, provider request, unknown model").
 		Assess("gateway returns 401/200/404 for the core request matrix", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			// Port-forward the maas-api (HTTPS) and mint an ephemeral key.
-			apiFwd, err := feature.PortForwardService(ctx, c, "maas-system", maasAPIService, maasAPIHTTPSPort)
+			apiFwd, err := funcs.PortForwardService(ctx, c, "maas-system", maasAPIService, maasAPIHTTPSPort)
 			if err != nil {
 				t.Fatalf("port-forward maas-api: %v", err)
 			}
@@ -66,7 +66,7 @@ func TestExtProcRouting(t *testing.T) {
 			}
 
 			// Port-forward the gateway (HTTP) and drive the request matrix.
-			gwFwd, err := feature.PortForwardService(ctx, c, "maas-system", gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, "maas-system", gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}

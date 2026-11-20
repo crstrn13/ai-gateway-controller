@@ -12,8 +12,8 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	"github.com/opendatahub-io/ai-gateway-controller/test/e2e/product"
-	"github.com/praxis-proxy/dockyard"
-	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/config"
+	"github.com/praxis-proxy/dockyard/funcs"
 	"github.com/praxis-proxy/dockyard/gateway"
 )
 
@@ -39,8 +39,8 @@ func TestBBR(t *testing.T) {
 		features.NewWithDescription(t.Name(), "The controller provisions the BBR data plane from CRs; the body `model` routes.").
 			WithLabel(LabelArea, LabelAreaBBR).
 			WithLabel(LabelSize, LabelSizeLarge).
-			WithLabel(dockyard.LabelTestSuite, dockyard.TestSuiteDefault).
-			WithSetup("CRs applied; controller provisions the ext-proc", feature.AllOf(
+			WithLabel(config.LabelTestSuite, config.TestSuiteDefault).
+			WithSetup("CRs applied; controller provisions the ext-proc", funcs.AllOf(
 				// The sim backend is suite-level infra (TestMain). Here: just the CRs.
 				product.ReadyTenant(ns),
 				// Issue the ext-proc serving certs (cert-manager; service-ca stand-in).
@@ -49,20 +49,20 @@ func TestBBR(t *testing.T) {
 				product.MountGatewayCATrust(),
 				// The HTTPS provider backend the model routes to.
 				product.ProviderBackend(providerBackend, "llm", "sim"),
-				feature.Create(
+				funcs.Create(
 					product.ProviderSecret("sim", ns),
 					product.ExternalProvider("sim", ns, backend),
 					product.ExternalModel("granite-8b", ns, "granite-8b", "sim", "granite-8b"),
 				),
 				// The controller must render + run the ext-proc workload, and the
 				// gateway proxy must be Ready (its LB IP only routes once it is).
-				feature.DeploymentBecomesAvailableWithin(3*time.Minute, "llm", providerBackend),
-				feature.DeploymentBecomesAvailableWithin(5*time.Minute, ns, "payload-processing-external-model-"+ns),
-				feature.DeploymentBecomesAvailableWithin(3*time.Minute, "istio-system", "ai-gateway-istio"),
+				funcs.DeploymentBecomesAvailableWithin(3*time.Minute, "llm", providerBackend),
+				funcs.DeploymentBecomesAvailableWithin(5*time.Minute, ns, "payload-processing-external-model-"+ns),
+				funcs.DeploymentBecomesAvailableWithin(3*time.Minute, "istio-system", "ai-gateway-istio"),
 			)).
 			Assess("body `model` alone routes to the backend (200)",
 				func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-					client, err := feature.GatewayClient(ctx, c, "ai-gateway", "istio-system")
+					client, err := funcs.GatewayClient(ctx, c, "ai-gateway", "istio-system")
 					if err != nil {
 						t.Fatalf("failed to provision gateway client: %q", err)
 					}
@@ -86,7 +86,7 @@ func TestBBR(t *testing.T) {
 					return ctx
 				},
 			).
-			WithTeardown("remove the CRs", feature.Delete(
+			WithTeardown("remove the CRs", funcs.Delete(
 				product.ExternalModel("granite-8b", ns, "granite-8b", "sim", "granite-8b"),
 				product.ExternalProvider("sim", ns, backend),
 				product.ProviderSecret("sim", ns),

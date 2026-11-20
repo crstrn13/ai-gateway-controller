@@ -13,7 +13,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/funcs"
 	"github.com/praxis-proxy/dockyard/gateway"
 )
 
@@ -37,7 +37,7 @@ func TestProviderCredentialEnforcement(t *testing.T) {
 				t.Fatalf("invalid run CA PEM")
 			}
 			for _, backend := range []string{"provider-a", "provider-b"} {
-				fwd, err := feature.PortForwardService(ctx, c, apiNamespace, backend, 8000)
+				fwd, err := funcs.PortForwardService(ctx, c, apiNamespace, backend, 8000)
 				if err != nil {
 					t.Fatalf("%s: port-forward: %v", backend, err)
 				}

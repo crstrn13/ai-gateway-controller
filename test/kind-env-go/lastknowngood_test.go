@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	"github.com/opendatahub-io/ai-gateway-controller/pkg/envelope"
-	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/funcs"
 	"github.com/praxis-proxy/dockyard/gateway"
 )
 
@@ -28,7 +28,7 @@ import (
 func TestLastKnownGood(t *testing.T) {
 	f := features.New("Last-known-good: invalid overlay keeps the last valid revision serving").
 		Assess("invalid overlay content converges back to the last valid digest and keeps serving 200, then recovers", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-			apiFwd, err := feature.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
+			apiFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
 			if err != nil {
 				t.Fatalf("port-forward maas-api: %v", err)
 			}
@@ -41,7 +41,7 @@ func TestLastKnownGood(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mint MaaS key: %v", err)
 			}
-			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			gwFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
 			if err != nil {
 				t.Fatalf("port-forward gateway: %v", err)
 			}
@@ -122,7 +122,7 @@ func setOverlayContent(ctx context.Context, c *envconf.Config, content string) e
 // the ConfigMap, which may hold invalid content. This is e2e-extproc.sh's
 // last_known_good_state.
 func lastKnownGoodState(ctx context.Context, c *envconf.Config) (st overlayState, err error) {
-	mounted, err := feature.ExecInDeployment(ctx, c, tenantNamespace, extDeployment, "cat", overlayMountPath)
+	mounted, err := funcs.ExecInDeployment(ctx, c, tenantNamespace, extDeployment, "cat", overlayMountPath)
 	if err != nil {
 		return st, err
 	}
@@ -132,7 +132,7 @@ func lastKnownGoodState(ctx context.Context, c *envconf.Config) (st overlayState
 	st.activeA = strings.Contains(mounted, "provider-provider-a")
 	st.activeB = strings.Contains(mounted, "provider-provider-b")
 
-	logs, err := feature.DeploymentLogs(ctx, c, tenantNamespace, extDeployment, "", 200)
+	logs, err := funcs.DeploymentLogs(ctx, c, tenantNamespace, extDeployment, "", 200)
 	if err != nil {
 		return st, err
 	}

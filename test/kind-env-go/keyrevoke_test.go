@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/praxis-proxy/dockyard/feature"
+	"github.com/praxis-proxy/dockyard/funcs"
 )
 
 // Stage 2 (increment 10): the key-revocation assertion ported from e2e-extproc.sh (37).
@@ -25,7 +25,7 @@ import (
 func TestMaaSKeyRevocation(t *testing.T) {
 	f := features.New("MaaS key revocation: an admin can revoke a minted key").
 		Assess("mint then revoke returns a success status", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-			apiFwd, err := feature.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
+			apiFwd, err := funcs.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
 			if err != nil {
 				t.Fatalf("port-forward maas-api: %v", err)
 			}

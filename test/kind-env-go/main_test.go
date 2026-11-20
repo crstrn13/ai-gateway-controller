@@ -15,11 +15,11 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 
-	"github.com/praxis-proxy/dockyard"
+	"github.com/praxis-proxy/dockyard/config"
 )
 
 // testenv is the shared suite environment; Features reference it via testenv.Test.
-var testenv = dockyard.NewEnvironmentFromFlags()
+var testenv = config.NewEnvironmentFromFlags()
 
 func TestMain(m *testing.M) {
 	log.SetLogger(klog.NewKlogr())
@@ -44,7 +44,6 @@ func TestMain(m *testing.M) {
 	}
 
 	platform := NewMaaSPlatform(runScript, cluster, evidence, *nativeProvision)
-	testenv.WithVessel(platform)
 
 	var setup, finish []env.Func
 	switch {
