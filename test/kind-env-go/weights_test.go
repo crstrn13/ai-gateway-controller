@@ -85,6 +85,11 @@ func TestStaticProviderWeights(t *testing.T) {
 					t.Fatalf("%s: overlay did not stabilize: %v", tc.name, err)
 				}
 
+				// Warm up: discard an initial batch so the measured distribution reflects
+				// steady-state routing, not cold-start skew (e.g. right after a prior test
+				// rolled the ext-proc pod and envoy is still warming connections).
+				_ = sampleProviderSplit(ctx, authed, demoPath, 40)
+
 				counts := sampleProviderSplit(ctx, authed, demoPath, tc.samples)
 				weights := map[string]int{"a": tc.weightA, "b": tc.weightB}
 				fits, ok, r := stats.FitsDistribution(counts, weights, statisticalAlpha)

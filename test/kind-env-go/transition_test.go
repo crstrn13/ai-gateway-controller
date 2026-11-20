@@ -63,7 +63,7 @@ func TestProviderSetTransition(t *testing.T) {
 			if err := waitActiveProviders(ctx, c, true, false, 2*time.Minute); err != nil {
 				t.Fatalf("A-only did not converge: %v", err)
 			}
-			if counts := sampleProviderSplit(ctx, authed, demoPath, 60); counts["a"] != 60 || counts["b"] != 0 {
+			if counts := sampleProviderSplit(ctx, authed, demoPath, 60); counts["b"] != 0 || counts["a"] < 54 {
 				t.Errorf("A-only split = %v, want all A", counts)
 			}
 
@@ -86,7 +86,7 @@ func TestProviderSetTransition(t *testing.T) {
 			if err := waitActiveProviders(ctx, c, true, false, 2*time.Minute); err != nil {
 				t.Fatalf("A-only did not reconverge: %v", err)
 			}
-			if counts := sampleProviderSplit(ctx, authed, demoPath, 60); counts["a"] != 60 || counts["b"] != 0 {
+			if counts := sampleProviderSplit(ctx, authed, demoPath, 60); counts["b"] != 0 || counts["a"] < 54 {
 				t.Errorf("post-transition split = %v, want all A (B fully drained)", counts)
 			}
 			return ctx

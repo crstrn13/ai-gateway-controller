@@ -76,8 +76,13 @@ func TestOverlayConvergence(t *testing.T) {
 			demoPath := "/" + tenantNamespace + "/demo/v1/chat/completions"
 			chat := gateway.ChatRequest{Model: "demo", Messages: gateway.User("hello")}
 
-			// Baseline: the suite provisions provider-a active ([1,0]). Record the
-			// ext-proc pod identity so we can prove the switch reconciles in place.
+			// Baseline: the suite provisions provider-a active ([1,0]). Ensure any in-flight
+			// ext-proc rollout from a previous test (credential-projection changes churn the
+			// Deployment template) has fully settled before capturing the pod identity, so the
+			// identity-stability check measures only this test's weight switch.
+			if err := waitDeploymentRolledOut(ctx, c, tenantNamespace, extDeployment, 2*time.Minute); err != nil {
+				t.Fatalf("ext-proc not settled before baseline: %v", err)
+			}
 			before, err := extProcIdentity(ctx, c)
 			if err != nil {
 				t.Fatalf("ext-proc identity (before): %v", err)
@@ -236,15 +241,18 @@ func waitOverlay(ctx context.Context, c *envconf.Config, wanted string, timeout 
 	}
 }
 
-// overlayIdentity is a stable fingerprint of the routing-overlay ConfigMap (generation,
+// overlayIdentity is a content fingerprint of the routing-overlay ConfigMap (generation,
 // resourceVersion, content digest, content) — the semantic-no-op comparison key.
 func overlayIdentity(ctx context.Context, c *envconf.Config) (string, error) {
 	var cm corev1.ConfigMap
 	if err := c.Client().Resources().Get(ctx, overlayConfigMap, tenantNamespace, &cm); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("gen=%d rv=%s digest=%s data=%s",
-		cm.Generation, cm.ResourceVersion, cm.Annotations[contentDigestAnnotation], cm.Data[overlayContentKey]), nil
+	// Content-based only: resourceVersion bumps on any re-apply (incl. the controller
+	// re-writing identical content during a concurrent reconcile), so it is not a reliable
+	// "churn" signal in a busy suite. generation + digest + data capture real changes.
+	return fmt.Sprintf("gen=%d digest=%s data=%s",
+		cm.Generation, cm.Annotations[contentDigestAnnotation], cm.Data[overlayContentKey]), nil
 }
 
 type podIdentity struct {

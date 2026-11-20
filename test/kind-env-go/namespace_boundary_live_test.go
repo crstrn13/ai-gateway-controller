@@ -5,6 +5,7 @@ package kindenv
 import (
 	"context"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -23,21 +24,15 @@ import (
 func TestNamespaceBoundaryLive(t *testing.T) {
 	f := features.New("Namespace boundary (live): the tenant route/gateway satisfy isolation").
 		Assess("the live HTTPRoute, Gateway and ReferenceGrants pass the namespace-boundary predicate", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-			route := &unstructured.Unstructured{}
-			route.SetGroupVersionKind(schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"})
-			if err := c.Client().Resources().Get(ctx, "external-model-demo-model", tenantNamespace, route); err != nil {
-				t.Fatalf("get HTTPRoute: %v", err)
+			// Establish a stable baseline: a prior test may have left the model reconciling,
+			// which transiently flips the route's Accepted/ResolvedRefs conditions.
+			if err := waitModelPhase(ctx, c, "Ready", 2*time.Minute); err != nil {
+				t.Fatalf("precondition model Ready: %v", err)
+			}
+			if err := waitOverlay(ctx, c, "a", 2*time.Minute); err != nil {
+				t.Fatalf("precondition overlay on provider-a: %v", err)
 			}
 
-			gw := &unstructured.Unstructured{}
-			gw.SetGroupVersionKind(schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "Gateway"})
-			if err := c.Client().Resources().Get(ctx, "maas-default-gateway", apiNamespace, gw); err != nil {
-				t.Fatalf("get Gateway: %v", err)
-			}
-
-			grants := listReferenceGrants(ctx, t, c, tenantNamespace)
-
-			// The real ext-proc Secret-API verdict feeds the predicate.
 			sa, err := extProcServiceAccount(ctx, c)
 			if err != nil {
 				t.Fatalf("resolve ext-proc SA: %v", err)
@@ -50,17 +45,36 @@ func TestNamespaceBoundaryLive(t *testing.T) {
 			if allowed {
 				secretAPI = "yes"
 			}
-
 			expect := boundary.NamespaceBoundaryExpect{
 				Tenant:      tenantNamespace,
 				GatewayNS:   apiNamespace,
 				GatewayName: "maas-default-gateway",
 				SecretAPI:   secretAPI,
 			}
-			if !boundary.NamespaceBoundaryOK(route.Object, gw.Object, grants, expect) {
-				t.Errorf("live namespace boundary not satisfied (secretAPI=%s, grants=%d)", secretAPI, len(grants["items"].([]any)))
+
+			// Retry: the route's status conditions can briefly flip during reconcile.
+			deadline := time.Now().Add(90 * time.Second)
+			for {
+				route := &unstructured.Unstructured{}
+				route.SetGroupVersionKind(schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"})
+				if err := c.Client().Resources().Get(ctx, "external-model-demo-model", tenantNamespace, route); err != nil {
+					t.Fatalf("get HTTPRoute: %v", err)
+				}
+				gw := &unstructured.Unstructured{}
+				gw.SetGroupVersionKind(schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "Gateway"})
+				if err := c.Client().Resources().Get(ctx, "maas-default-gateway", apiNamespace, gw); err != nil {
+					t.Fatalf("get Gateway: %v", err)
+				}
+				grants := listReferenceGrants(ctx, t, c, tenantNamespace)
+				if boundary.NamespaceBoundaryOK(route.Object, gw.Object, grants, expect) {
+					return ctx
+				}
+				if time.Now().After(deadline) {
+					t.Errorf("live namespace boundary not satisfied (secretAPI=%s, grants=%d)", secretAPI, len(grants["items"].([]any)))
+					return ctx
+				}
+				time.Sleep(3 * time.Second)
 			}
-			return ctx
 		}).
 		Feature()
 	testenv.Test(t, f)
