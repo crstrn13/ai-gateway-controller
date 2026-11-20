@@ -198,6 +198,58 @@ func TestAPITranslation(t *testing.T) {
 			}
 			return ctx
 		}).
+		Assess("a streaming OpenAI request to the Anthropic provider yields translated OpenAI SSE chunks", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			// Still routed to the Anthropic translation provider.
+			apiFwd, err := feature.PortForwardService(ctx, c, apiNamespace, maasAPIService, maasAPIHTTPSPort)
+			if err != nil {
+				t.Fatalf("port-forward maas-api: %v", err)
+			}
+			defer apiFwd.Close()
+			caPEM, err := runOwnedCA(ctx, c)
+			if err != nil {
+				t.Fatalf("read run-owned CA: %v", err)
+			}
+			key, err := mintMaaSKey(ctx, apiFwd.Addr(), caPEM)
+			if err != nil {
+				t.Fatalf("mint MaaS key: %v", err)
+			}
+			gwFwd, err := feature.PortForwardService(ctx, c, apiNamespace, gatewayService, gatewayHTTPPort)
+			if err != nil {
+				t.Fatalf("port-forward gateway: %v", err)
+			}
+			defer gwFwd.Close()
+
+			// Base the client at the tenant/model prefix so ChatCompletionStream's
+			// "/v1/chat/completions" resolves to the gateway route.
+			streamClient := gateway.New(gwFwd.URL("http")+"/"+tenantNamespace+"/demo",
+				gateway.WithBearer(key), gateway.WithTimeout(60*time.Second))
+			stream, err := streamClient.ChatCompletionStream(ctx,
+				gateway.ChatRequest{Model: "demo", Messages: gateway.User("Reply with the word blue.")})
+			if err != nil {
+				t.Fatalf("open translated stream (expected 200): %v", err)
+			}
+			defer func() { _ = stream.Close() }()
+
+			chunks := 0
+			openAIShaped := false
+			for {
+				data, err := stream.Recv()
+				if err != nil {
+					break // io.EOF at [DONE] / end
+				}
+				chunks++
+				if strings.Contains(string(data), "chat.completion.chunk") || strings.Contains(string(data), "\"delta\"") {
+					openAIShaped = true
+				}
+			}
+			if chunks == 0 {
+				t.Error("translated stream yielded no SSE chunks")
+			}
+			if !openAIShaped {
+				t.Error("streamed chunks were not translated to OpenAI SSE shape (no chat.completion.chunk/delta)")
+			}
+			return ctx
+		}).
 		Feature()
 	testenv.Test(t, f)
 }
